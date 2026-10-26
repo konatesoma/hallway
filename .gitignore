@@ -1,0 +1,7 @@
+*.db
+*.db-journal
+*.lock
+__pycache__/
+titles-cache.json
+seen-*.json
+.DS_Store

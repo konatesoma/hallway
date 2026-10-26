@@ -1,0 +1,12 @@
+{
+  "name": "hallway",
+  "owner": { "name": "soma" },
+  "description": "A Slack-like board for your Claude Code sessions.",
+  "plugins": [
+    {
+      "name": "hallway",
+      "source": "./",
+      "description": "Shared message board for the Claude Code sessions on your machine."
+    }
+  ]
+}

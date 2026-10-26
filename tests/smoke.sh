@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Smoke test: two fake running sessions in a throwaway HOME. Touches nothing outside it.
+set -u
+HERE="$(cd "$(dirname "$0")/.." && pwd)"; BIN="$HERE/bin/hallway.py"
+T=$(mktemp -d); PASS=0; FAIL=0
+trap 'kill $PA $PB 2>/dev/null; wait $PA $PB 2>/dev/null; rm -rf "$T"' EXIT
+mkdir -p "$T/.claude/sessions" "$T/work/checkout/.git" "$T/work/payments/.git"
+echo "ref: refs/heads/claude/checkout-redesign" > "$T/work/checkout/.git/HEAD"
+echo "ref: refs/heads/claude/flaky-payment-test" > "$T/work/payments/.git/HEAD"
+sleep 300 & PA=$!; sleep 300 & PB=$!
+SA=aaaaaaaa-1111-2222-3333-444444444444; SB=bbbbbbbb-1111-2222-3333-444444444444
+printf '{"pid":%s,"sessionId":"%s","cwd":"%s","name":"a"}' $PA $SA "$T/work/checkout" > "$T/.claude/sessions/$PA.json"
+printf '{"pid":%s,"sessionId":"%s","cwd":"%s","name":"b"}' $PB $SB "$T/work/payments" > "$T/.claude/sessions/$PB.json"
+run(){ env -u CLAUDE_CODE_HOST_SESSION_ID HOME="$T" "$@"; }
+C(){ local sid=$1; shift; run CLAUDE_CODE_SESSION_ID=$sid python3 "$BIN" "$@"; }
+note(){ python3 -c "import json,sys;print(json.dumps({'session_id':sys.argv[1],'cwd':sys.argv[2],'prompt':sys.argv[3]}))" "$1" "$2" "$3" | run $4 python3 "$BIN" note; }
+ok(){ if eval "$2"; then PASS=$((PASS+1)); echo "PASS  $1"; else FAIL=$((FAIL+1)); echo "FAIL  $1"; fi; }
+
+note $SA "$T/work/checkout" "Move the promo code field above the order totals on the checkout page" "env X=1"
+START=$(printf '{"session_id":"%s","cwd":"%s"}' $SB "$T/work/payments" | run python3 "$BIN" hook-start)
+ok "SessionStart hook lists the other session and what it is doing" 'echo "$START" | grep -q "promo code field"'
+ok "shim installed and runs"                  '[ -x "$T/.local/bin/hallway" ] && HOME="$T" "$T/.local/bin/hallway" --help >/dev/null 2>&1'
+ok "find locates the session by topic"        'C $SB find promo | grep -q "s-aaaaaaaa"'
+ok "send resolves a session by its branch"    'C $SB send checkout -s "Totals API" -m "Does your change touch totals?" | grep -q "^sent "'
+ok "the recipient receives the message"       'C $SA inbox --brief | grep -q "Totals API"'
+note $SB "$T/work/payments" "Rewrite the retry loop so it backs off exponentially" "env HALLWAY_NO_PROMPTS=1"
+ok "HALLWAY_NO_PROMPTS=1 records nothing"     '! C $SA peers | grep "s-bbbbbbbb" | grep -q "asked:"'
+ok "status line is shown to others"           'C $SB status "fixing retry backoff" >/dev/null; C $SA peers | grep -q "fixing retry backoff"'
+# Built at runtime so no secret-looking literal sits in the repo (GitHub push protection flags those).
+FAKE=$(python3 -c "print('Zx' + 'AbCd1234' * 5)")
+ok "token-looking strings are redacted"       'note $SA "$T/work/checkout" "use key $FAKE for billing" "env X=1"; C $SB peers | grep s-aaaaaaaa | grep -q "\[redacted\]"'
+ok "all data stays inside the test HOME"      '[ -f "$T/.claude/hallway/hallway.db" ]'
+echo; echo "$PASS passed, $FAIL failed"; [ $FAIL -eq 0 ]
