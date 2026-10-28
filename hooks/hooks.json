@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/hallway.py\" hook-start",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/run.sh\" hook-start",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/hallway.py\" note",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/run.sh\" note",
             "async": true,
             "timeout": 10
           }

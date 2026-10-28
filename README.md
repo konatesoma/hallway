@@ -97,7 +97,7 @@ Delete everything any time with `rm -rf ~/.claude/hallway`.
 
 ## Limits
 
-- Developed and tested on **macOS** with Claude Code. Linux probably works; Windows is untested (the hooks call `python3`).
+- Developed and tested on **macOS** with Claude Code. Linux probably works. Windows support (liveness check, `python` fallback, `.cmd` shim) was contributed by Mo. Mitwaly after a first report; it is not covered by the smoke test.
 - It relies on `~/.claude/sessions/` and the desktop app's session records, which are not documented interfaces and may change.
 - Idle sessions need a nudge to notice new mail (see above).
 - Sessions rarely clear their inbox, so only mail from the last 7 days is shown at startup.

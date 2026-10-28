@@ -27,7 +27,8 @@ CHECK_PIDS = os.environ.get("HALLWAY_NO_PID_CHECK", "") == ""
 
 # The desktop app keeps each session's sidebar metadata (its human title, branch,
 # PR) as JSON here, keyed to the CLI session id under "cliSessionId".
-_APPSUP = os.path.join(HOME, "Library", "Application Support")
+_APPSUP = (os.environ.get("APPDATA") or os.path.join(HOME, "AppData", "Roaming")
+           if os.name == "nt" else os.path.join(HOME, "Library", "Application Support"))
 # The desktop app keeps sidebar records per install: the standard app under "Claude",
 # a gateway / third-party build under "Claude-3p". Reading only one of them leaves every
 # session from the other with no title, so read both. (macOS desktop app only; without
@@ -228,6 +229,40 @@ def _scan_titles():
     return out
 
 
+def _pid_alive(pid):
+    """True if a process with this id is running. os.kill(pid, 0) is only an existence
+    check on POSIX; on Windows Python turns it into TerminateProcess and kills the target."""
+    pid = int(pid)
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.GetLastError() == 5  # access denied means it exists
+        try:
+            code = ctypes.c_ulong()
+            return bool(k32.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value == 259)  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+
+
+def project_of(cwd):
+    """Project name for a working directory (the repo, not a worktree under it)."""
+    cwd = (cwd or "").replace("\\", "/")
+    return os.path.basename(cwd.split("/.claude/worktrees/")[0].rstrip("/")) or "root"
+
+
 def live_sessions():
     """Sessions currently running on this machine, from Claude Code's own registry."""
     out = {}
@@ -236,8 +271,8 @@ def live_sessions():
             with open(path) as fh:
                 rec = json.load(fh)
             pid = rec.get("pid")
-            if pid and CHECK_PIDS:
-                os.kill(pid, 0)  # raises if the process is gone
+            if pid and CHECK_PIDS and not _pid_alive(pid):
+                continue
             out[rec.get("name") or ("pid-%s" % pid)] = rec
         except Exception:
             continue
@@ -282,7 +317,7 @@ def detect_identity(explicit=None):
     meta = None
     if not explicit_handle:
         meta = title_for_host_session(host_id) or session_titles().get(session_id)
-    project = os.path.basename(cwd.split("/.claude/worktrees/")[0]) or "root"
+    project = project_of(cwd)
     return {
         "title": (meta or {}).get("title"),
         "regname": regname,
@@ -456,10 +491,10 @@ def sync_live_sessions(conn):
             "INSERT OR IGNORE INTO agents (handle, kind, session_id, cwd, project,"
             " title, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?)",
             (handle, "session", sid, cwd,
-             os.path.basename(cwd.split("/.claude/worktrees/")[0]) or "root",
+             project_of(cwd),
              meta.get("title"), (rec.get("startedAt") or 0) / 1000 or now(),
              (rec.get("startedAt") or 0) / 1000 or now()))
-        for ch in ("all", os.path.basename(cwd.split("/.claude/worktrees/")[0]) or "root"):
+        for ch in ("all", project_of(cwd)):
             conn.execute("INSERT OR IGNORE INTO memberships (handle, channel, joined)"
                          " VALUES (?,?,?)", (handle, ch, now()))
         changed = True
@@ -1191,20 +1226,25 @@ def _install_shim():
     """Put a `hallway` command on PATH (a plugin install otherwise leaves it unreachable).
     Idempotent and best-effort."""
     try:
-        if os.name == "nt":
-            return
         d = os.path.join(HOME, ".local", "bin")
         os.makedirs(d, exist_ok=True)
-        shim = os.path.join(d, "hallway")
-        want = '#!/bin/sh\nexec python3 "%s" "$@"\n' % os.path.abspath(__file__)
-        try:
-            if open(shim).read() == want:
-                return
-        except Exception:
-            pass
-        with open(shim, "w") as fh:
-            fh.write(want)
-        os.chmod(shim, 0o755)
+        me = os.path.abspath(__file__)
+        # `python3` is often a Microsoft Store stub on Windows, so point at this interpreter.
+        py = sys.executable.replace("\\", "/") if os.name == "nt" and sys.executable else "python3"
+        shims = {"hallway": '#!/bin/sh\nexec "%s" "%s" "$@"\n' % (py, me.replace("\\", "/"))
+                 if os.name == "nt" else '#!/bin/sh\nexec python3 "%s" "$@"\n' % me}
+        if os.name == "nt":  # a .cmd as well, for cmd.exe and PowerShell
+            shims["hallway.cmd"] = '@echo off\r\n"%s" "%s" %%*\r\n' % (sys.executable, me)
+        for name, want in shims.items():
+            shim = os.path.join(d, name)
+            try:
+                if open(shim, newline="").read() == want:
+                    continue
+            except Exception:
+                pass
+            with open(shim, "w", newline="") as fh:
+                fh.write(want)
+            os.chmod(shim, 0o755)
     except Exception:
         pass
 
