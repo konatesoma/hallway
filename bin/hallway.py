@@ -2331,7 +2331,8 @@ def ledger_state(conn, gh=None, jira=None):
         elif ji["assigned"] and ji["status"].lower() not in ("done", "closed") and key not in acked:
             rows.append({"ticket": key, "title": ji["summary"], "summary": "", "status": ji["status"],
                          "pr": "", "pr_live": None, "waiting_on": "nobody",
-                         "need": "Assigned to you and in progress in Jira; no session is working on it",
+                         "need": "Assigned to you in Jira (%s); no session is working on it" % ji["status"],
+                         "kind": "assigned",
                          "updated": 0, "session": None, "source": "jira", "jira": ji})
     tp = conf.get("ticket_projects") or {}
     folders = {k: os.path.expanduser(v) for k, v in (conf.get("project_folders") or {}).items()}

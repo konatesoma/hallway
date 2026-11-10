@@ -184,7 +184,7 @@ button,textarea{font:inherit;color:inherit}
 #ledger h1{font:600 28px var(--sans);margin:0;color:#fff}
 #ledger .lsub{color:var(--dim);font-size:14px;margin:6px 0 20px}
 #ledger .lsub b{color:var(--text);font-weight:500}
-.lcards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+.lcards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
 .lcard{all:unset;box-sizing:border-box;cursor:pointer;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#0b1520;position:relative;overflow:hidden}
 .lcard:hover{border-color:var(--line2)}
 .lcard.on{border-color:var(--c);box-shadow:0 0 0 1px var(--c) inset,0 0 30px color-mix(in srgb,var(--c) 18%,transparent)}
@@ -806,7 +806,7 @@ function renderGlance(att) {
 /* ================================================================ ledger */
 let L = null, lFilter = "all", lQ = "", lOpen = null, lShowDone = false, lShowOld = false, lScrollTo = null;
 let lGroup = (() => { try { return localStorage.getItem("hallway.lgroup") || "status"; } catch (e) { return "status"; } })();
-const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", moving:"#5ef2ff", done:"#62ffa8"};
+const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", todo:"#c3a6ff", moving:"#5ef2ff", done:"#62ffa8"};
 const STCOL = s => /fail|block|changes/i.test(s) ? "#ff5470" : /ready|approved|merged|done|in test/i.test(s) ? "#62ffa8" :
   /decision|waiting/i.test(s) ? "#a99bff" : /review/i.test(s) ? "#6aa8ff" : /hold|draft/i.test(s) ? "#7f99a7" : "#5ef2ff";
 const PCOL = ["#a99bff", "#6aa8ff", "#62ffa8", "#ff8fb1", "#ffd36e", "#7ff0d0"];
@@ -821,6 +821,8 @@ function bucketOf(r) {
   if (st === "done" || (st === "merged" && (!w || w === "nobody"))) return "done";
   if (w === "you") return "you";
   if (L.approvers.includes(w.split(/[-_ .@]/)[0])) return "approver";
+  // Yours in Jira, but no session is on it: not moving, just not started.
+  if (r.kind === "assigned" || (r.source === "jira" && w !== "you")) return "todo";
   if (!w || ["nobody", "release", "session"].includes(w)) return "moving";
   return "review";
 }
@@ -854,7 +856,7 @@ function renderLedger() {
   const rows = L.rows.map(r => ({...r, b:bucketOf(r)}));
   const apprNames = L.approvers.map(personName).join(", ");
   const B = {you:["NEEDS YOU", "Decisions only you can make"], approver:["WAITING ON APPROVAL", apprNames ? "From " + apprNames : "Sign-offs and release go"],
-    review:["WAITING ON REVIEW OR CI", "A teammate, a reviewer or CI"], moving:["MOVING / IN TEST", "Nobody is blocking it"], done:["DONE", "Last 7 days"]};
+    review:["WAITING ON REVIEW OR CI", "A teammate, a reviewer or CI"], todo:["ASSIGNED TO YOU, NO SESSION", "Yours in Jira, not started here"], moving:["MOVING / IN TEST", "A session is on it"], done:["DONE", "Last 7 days"]};
   const nOld = rows.filter(r => r.b === "old").length;
   const cards = $("#lcards"); cards.innerHTML = "";
   for (const [k, [l, h]] of Object.entries(B)) { const n = rows.filter(r => r.b === k).length;
@@ -875,7 +877,7 @@ function renderLedger() {
     (!lQ || JSON.stringify(r).toLowerCase().includes(lQ.toLowerCase())));
   if (!list.length) body.innerHTML = `<tr><td colspan="7" class="empty">Nothing here yet. Sessions add their tickets as they reach milestones.</td></tr>`;
   document.querySelectorAll("[data-g]").forEach(b => b.classList.toggle("on", b.dataset.g === lGroup));
-  const bOrder = {you:0, approver:1, review:2, moving:3, done:4, old:5};
+  const bOrder = {you:0, approver:1, review:2, todo:3, moving:4, done:5, old:6};
   let groups, keyOf;
   if (lGroup === "project") {
     const counts = {}; list.forEach(r => counts[r.project] = (counts[r.project] || 0) + 1);
