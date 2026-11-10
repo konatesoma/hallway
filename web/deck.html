@@ -212,6 +212,8 @@ button,textarea{font:inherit;color:inherit}
 .ltab tr.row{cursor:pointer;border-bottom:1px solid rgba(94,242,255,.07)}
 .ltab tr.row:hover{background:rgba(94,242,255,.04)}
 .ltab tr.row.open{background:rgba(94,242,255,.06)}
+@keyframes lflash{0%,60%{background:rgba(255,181,71,.22)}100%{background:rgba(94,242,255,.06)}}
+.ltab tr.row.lflash{animation:lflash 1.8s ease}
 .ltab td{padding:13px 14px;vertical-align:top;font-size:13.5px}
 .ltab .grp td{background:#08111a;font:600 10.5px var(--mono);letter-spacing:.18em;color:var(--gc);padding:9px 14px;border-bottom:1px solid var(--line)}
 .ltab .grp td span{color:var(--faint);margin-left:8px}
@@ -512,7 +514,11 @@ function ledgerCard(r) {
     <div class="n2">${esc(r.title || r.ticket)}</div>
     <div class="n3">${esc(short(lc && !lc.by_me ? lc.author + ": " + lc.excerpt : (r.need || r.status), 240))}</div>
     <div class="act"><button class="btn p" data-a="open">OPEN IN LEDGER</button>${(r.source === "jira" || r.jira_alert) ? `<button class="btn" data-a="done">MARK DONE</button>` : ""}</div>`;
-  d.querySelector('[data-a="open"]').onclick = () => { lOpen = r.ticket + "|" + (r.pr || "") + "|" + (r.session ? r.session.handle : ""); lFilter = "all"; location.hash = "#ledger"; };
+  d.querySelector('[data-a="open"]').onclick = () => {
+    lOpen = r.ticket + "|" + (r.pr || "") + "|" + (r.session ? r.session.handle : "");
+    lFilter = "all"; lQ = ""; const q = $("#lq"); if (q) q.value = "";
+    if (bucketOf(r) === "done") lShowDone = true;
+    lScrollTo = lOpen; location.hash = "#ledger"; };
   const dn = d.querySelector('[data-a="done"]'); if (dn) dn.onclick = async () => { await ackTicket(r); render(); };
   return d;
 }
@@ -798,7 +804,7 @@ function renderGlance(att) {
 
 
 /* ================================================================ ledger */
-let L = null, lFilter = "all", lQ = "", lOpen = null, lShowDone = false, lShowOld = false;
+let L = null, lFilter = "all", lQ = "", lOpen = null, lShowDone = false, lShowOld = false, lScrollTo = null;
 let lGroup = (() => { try { return localStorage.getItem("hallway.lgroup") || "status"; } catch (e) { return "status"; } })();
 const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", moving:"#5ef2ff", done:"#62ffa8"};
 const STCOL = s => /fail|block|changes/i.test(s) ? "#ff5470" : /ready|approved|merged|done|in test/i.test(s) ? "#62ffa8" :
@@ -940,6 +946,12 @@ function renderLedger() {
         body.appendChild(tr2);
       }
     }
+  }
+  if (lScrollTo) {
+    const target = body.querySelector("tr.row.open");
+    if (target) { lScrollTo = null;
+      requestAnimationFrame(() => { target.scrollIntoView({behavior:"smooth", block:"center"});
+        target.classList.add("lflash"); setTimeout(() => target.classList.remove("lflash"), 1800); }); }
   }
   const gh = L.github_error ? `GitHub: ${esc(L.github_error)}` : L.github_at ? `GitHub checked ${ago(L.github_at)} ago` : "Checking GitHub…";
   const jr = L.jira_error ? ` Jira: ${esc(L.jira_error)}.` : L.jira_at ? ` Jira checked ${ago(L.jira_at)} ago.` : "";
