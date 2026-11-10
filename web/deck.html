@@ -904,7 +904,7 @@ function renderLedger() {
         const tr2 = document.createElement("tr"); tr2.className = "ldet";
         tr2.innerHTML = `<td colspan="7"><div class="ldetbox"><div>
             ${r.summary ? `<h4>WHAT IT IS</h4><p>${esc(r.summary)}</p>` : ""}
-            ${r.need ? `<h4>WHAT'S NEEDED${r.waiting_on ? " FROM " + esc(personName(r.waiting_on).toUpperCase()) : ""}</h4><p class="q">${esc(r.need)}</p>` : ""}
+            ${r.need ? `<h4>${["", "nobody", "release", "session"].includes(r.waiting_on || "") ? "NEXT STEP" : "WHAT'S NEEDED FROM " + esc(personName(r.waiting_on).toUpperCase())}</h4><p class="q">${esc(r.need)}</p>` : ""}
             ${r.pr_live ? `<h4>PULL REQUEST</h4><p>${esc(r.pr_live.title)}${r.pr_live.reviewers.length ? "<br>Review requested from " + esc(r.pr_live.reviewers.join(", ")) : ""}${r.pr_live.mergeable === "conflicting" ? "<br><b style='color:var(--red)'>Merge conflict</b>" : ""}</p>` : ""}
             ${r.outdated ? `<h4 style="color:var(--red)">OUTDATED</h4><p>The ledger says "${esc(r.status)}", but ${esc(r.outdated)}. The session will be reminded the next time it works on it.</p>` : ""}
             ${r.jira && r.jira.last_comment && !r.jira.last_comment.by_me ? `<h4 style="color:${r.jira.last_comment.for_me ? "var(--amber)" : "var(--dim)"}">LATEST JIRA COMMENT · ${esc(r.jira.last_comment.author.toUpperCase())}${r.jira.last_comment.for_me ? " · FOR YOU" : ""}</h4><p>${esc(r.jira.last_comment.excerpt)}</p>` : ""}
@@ -958,8 +958,11 @@ function renderLedger() {
   $("#lfoot").innerHTML = `${rows.filter(r => r.source === "session").length} rows from sessions, ${rows.filter(r => r.source === "github").length} open PRs and ${rows.filter(r => r.source === "jira").length} Jira tickets no session has reported. ${gh}.${jr}`;
 }
 function sessionOptions(r) {
-  const all = (S ? S.sessions : []).filter(s => s.live);
   const owner = r.session && r.session.handle;
+  // The owner comes first even when asleep (the dispatcher wakes it); otherwise running sessions.
+  let all = (S ? S.sessions : []).filter(s => s.live || s.handle === owner);
+  if (owner && !all.some(s => s.handle === owner))
+    all = [{handle:owner, title:r.session.title, group:r.project, listening:false, active:Date.now() / 1000}, ...all];
   const score = s => (s.handle === owner ? 0 : s.group === r.project ? 1 : 2);
   const sorted = [...all].sort((a, z) => score(a) - score(z) || z.active - a.active);
   const opts = sorted.map(s => `<option value="${esc(s.handle)}"${s.handle === owner ? " selected" : ""}>${esc(s.title)} · ${esc(s.group || "")}${s.handle === owner ? " · owns this" : ""}${s.listening ? "" : " · asleep"}</option>`);
