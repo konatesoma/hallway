@@ -84,11 +84,15 @@ with it, starting `[Hallway] From your user:`. Treat it exactly like a message t
 No session needs to act as a relay.
 
 ## Acting as the dispatcher
-Some sessions are asleep: the desktop app has stopped their process, so nothing can wake them except a
-message pushed in through the app. When the user asks you to "be the Hallway dispatcher":
-1. Run `hallway dispatch` as a **background** command. It waits, using no tokens, until the user sends a
-   message from the deck to a session that is asleep, then returns what to deliver.
-2. Deliver each item with `mcp__ccd_session_mgmt__send_message`, using its `session_id` and its `message`
-   word for word (it already starts with `[Hallway] From your user:`).
-3. Run `hallway dispatch` in the background again. Say nothing to the user unless a delivery failed.
-4. If the user sends you "resume", the dispatcher had gone to sleep: just start step 1 again.
+Some sessions are asleep: the desktop app has stopped their process. When the user asks you to "be the
+Hallway dispatcher":
+1. Run `hallway dispatch` as a background command. It waits, using no tokens, until the user messages a
+   session that is asleep. It returns JSON: `{"wake": [{"session_id": ..., "message": ...}]}`.
+2. For each item, send its `message` (a content-free wake-up ping) to its `session_id` with
+   `mcp__ccd_session_mgmt__send_message`. You never relay the user's message yourself; once the session
+   is awake, its own listener delivers it.
+3. Run `hallway dispatch` in the background again. If the user sends you "resume", start at step 1.
+
+## If you receive a "Hallway wake-up ping"
+Reply with the single word "awake" and stop. It carries no task; your listener will deliver any message
+from your user right after.

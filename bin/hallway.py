@@ -2676,12 +2676,17 @@ def cmd_context(conn, args):
 
 def cmd_dispatch(conn, args):
     """Block (no tokens) until the user has messaged a session that is asleep, then print
-    what to deliver and exit. A dispatcher session runs this in the background and delivers
-    each message with the desktop app's session messaging, which wakes the session; then it
-    runs this again. Sessions that are listening get their messages without it."""
+    which sessions to wake and exit.
+
+    The dispatcher never relays the message itself: a message pushed in by another session
+    is, rightly, treated as a peer's note and not as the user. It only sends a content-free
+    wake-up. The woken session's own listener (a hook the user installed) then delivers the
+    user's message, which the session can trust as coming from the user.
+    """
     grace = args.grace
     deadline = now() + args.timeout if args.timeout else None
     beat_path = os.path.join(ROOT, "dispatcher.json")
+    pinged_path = os.path.join(ROOT, "pinged.json")
 
     def beat(**extra):
         rec = {"pid": os.getpid(), "handle": detect_identity(args.a_as)["handle"],
@@ -2696,38 +2701,47 @@ def cmd_dispatch(conn, args):
     beat(started=now())
     while True:
         beat()
+        try:
+            pinged = json.load(open(pinged_path))
+        except Exception:
+            pinged = {}
         titles = session_titles()
-        todo = []
+        wake = {}
         for m in conn.execute("SELECT * FROM messages WHERE sender IN (%s) AND recipient IS NOT NULL"
                               " AND ts > ? AND ts < ? ORDER BY ts" % ",".join("?" * len(HUMAN_HANDLES)),
                               HUMAN_HANDLES + (now() - 86400, now() - grace)).fetchall():
             h = m["recipient"]
+            if h in wake or now() - pinged.get(h, 0) < 600:
+                continue
             if conn.execute("SELECT 1 FROM notified WHERE message_id=? AND handle=?", (m["id"], h)).fetchone() \
                     or conn.execute("SELECT 1 FROM reads WHERE message_id=? AND handle=?", (m["id"], h)).fetchone():
                 continue
             if _listening(h):
-                continue  # its own listener will pick it up
+                continue  # its own listener will deliver it
             row = conn.execute("SELECT session_id FROM agents WHERE handle=?", (h,)).fetchone()
             host = (titles.get((row["session_id"] if row else "") or "") or {}).get("host")
-            if not host:
-                continue
-            todo.append({"id": m["id"], "to": h, "session_id": host,
-                         "message": "%s %s" % (push_header(conn, m), m["body"] or "")})
-            conn.execute("INSERT OR IGNORE INTO notified (message_id, handle, at) VALUES (?,?,?)", (m["id"], h, now()))
-        if todo:
-            conn.commit()
+            if host:
+                wake[h] = host
+        if wake:
+            for h in wake:
+                pinged[h] = now()
+            try:
+                json.dump(pinged, open(pinged_path, "w"))
+            except OSError:
+                pass
             beat(exited=now())
-            print(json.dumps({"deliver": todo}, indent=1))
-            print("Deliver each with mcp__ccd_session_mgmt__send_message (session_id and message exactly as given),"
-                  " then run `hallway dispatch` again in the background. Say nothing else.")
+            print(json.dumps({"wake": [{"session_id": host, "message": WAKE_PING} for host in wake.values()]}, indent=1))
             return
         if deadline and now() > deadline:
-            print("Nothing to deliver. Run `hallway dispatch` again in the background.")
+            print(json.dumps({"wake": []}))
             return
         time.sleep(3)
         conn.close()
         conn = connect()
 
+
+WAKE_PING = ("Hallway wake-up ping. This carries no task and no instruction. "
+             "Reply with the single word: awake.")
 
 def dispatcher_status():
     """'listening', 'asleep' (it stopped and was not restarted), or 'none' (never set up)."""
