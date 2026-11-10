@@ -1554,6 +1554,14 @@ def _listening(handle):
         return False
 
 
+def _version():
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        return json.load(open(os.path.join(here, "..", ".claude-plugin", "plugin.json"))).get("version", "")
+    except Exception:
+        return ""
+
+
 def deck_state(conn):
     t = now()
     titles = session_titles()
@@ -1630,7 +1638,7 @@ def deck_state(conn):
     midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
     today = conn.execute("SELECT COUNT(*) FROM messages WHERE ts >= ?", (midnight,)).fetchone()[0]
     return {"generated_at": t, "sessions": sessions, "messages": msgs, "names": names,
-            "dispatcher": dispatcher_status(),
+            "dispatcher": dispatcher_status(), "version": _version(),
             "known": sorted(known), "activity": bins, "messages_today": today,
             "hour": lt.tm_hour, "human": HUMAN}
 

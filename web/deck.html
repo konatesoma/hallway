@@ -387,7 +387,11 @@ document.querySelectorAll(".tabbar a[data-to]").forEach(a => a.onclick = e => { 
 /* -------------------------------------------------------------- data */
 async function load() {
   try { const r = await fetch("/api/deck", {cache:"no-store"}); if (!r.ok) throw 0;
-    S = await r.json(); lastOk = Date.now(); render(); }
+    S = await r.json(); lastOk = Date.now();
+    // The deck was updated while this page was open: load the new page instead of running old code.
+    if (window.DECK_VERSION === undefined) window.DECK_VERSION = S.version;
+    else if (S.version && S.version !== window.DECK_VERSION && !editing() && !$("#compose").classList.contains("on")) { location.reload(); return; }
+    render(); }
   catch (e) { /* keep the last picture; the clock turns red */ }
 }
 async function sendReply(handle, text) {
