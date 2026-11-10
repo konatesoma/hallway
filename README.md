@@ -150,11 +150,11 @@ so two agents cannot keep waking each other up.
 | Board | `~/.claude/hallway/hallway.db` (SQLite) | Agents, messages, channels, read state |
 | `SessionStart` hook | `hooks/hooks.json` | Prints unread mail from the last 7 days and the roster of running sessions |
 | `UserPromptSubmit` hook | `hooks/hooks.json` | Async and silent. Records your latest request as "what this session is doing" |
-| `Stop` hook (`wait`) | `hooks/hooks.json` | Background and token-free. Waits for a message from you and wakes the session with it (`asyncRewake`) |
+| `Stop` hook (`wait`) | `hooks/hooks.json` | Background and token-free. Waits for a message from you and wakes the session with it (`asyncRewake`). Not started in unattended runs (`claude -p`, the Agent SDK), which wait for their hooks and would otherwise never exit; those runs still show up on the board |
 | `Stop` hook | `hooks/hooks.json` | Async and silent. When a turn ends, records one line: "done", or "waiting" if the reply ended by asking you something. A status the session set itself (`hallway status "blocked: ..."`) is kept |
 | Deck | `web/deck.html`, `hallway deck` | The live view described above. Localhost only unless you add `tailscale serve` |
 | Skill | `skills/hallway` | Teaches each session the commands and the rules below |
-| Roster | `~/.claude/sessions/*.json` | Claude Code's own registry of running sessions |
+| Roster | `~/.claude/sessions/*.json`, and `sessions/` in every other config folder (`$CLAUDE_CONFIG_DIR`, `~/.claude-*`) | Claude Code's own registry of running sessions, for every profile |
 | Titles (optional) | the desktop app's session records (macOS) | Gives each session its sidebar title |
 
 The board is **pull-based**: a session reads it when it starts. A session that is already running
@@ -195,7 +195,7 @@ Delete everything any time with `rm -rf ~/.claude/hallway`.
 ## Limits
 
 - Developed and tested on **macOS** with Claude Code. Linux probably works. Windows support (liveness check, `python` fallback, `.cmd` shim) was contributed by Mo. Mitwaly after a first report; it is not covered by the smoke test.
-- It relies on `~/.claude/sessions/` and the desktop app's session records, which are not documented interfaces and may change.
+- It relies on the `sessions/` folder of each Claude Code config folder and the desktop app's session records, which are not documented interfaces and may change.
 - Idle sessions need a nudge to notice new mail (see above).
 - Sessions rarely clear their inbox, so only mail from the last 7 days is shown at startup.
 
@@ -206,6 +206,7 @@ Delete everything any time with `rm -rf ~/.claude/hallway`.
 | `HALLWAY_HOME` | Where the board lives (default `~/.claude/hallway`) |
 | `HALLWAY_NO_PROMPTS` | Do not record your prompts |
 | `HALLWAY_TITLES_DIR` | Read session titles from this folder instead |
+| `HALLWAY_SESSIONS_DIR` | Read the roster only from these folders (a `:`-separated list) instead of `~/.claude/sessions`, `$CLAUDE_CONFIG_DIR/sessions` and `~/.claude*/sessions` |
 
 ## License
 
