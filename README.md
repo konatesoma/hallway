@@ -140,6 +140,13 @@ session can act as the **dispatcher**: ask it to "be the Hallway dispatcher". It
 in the background, which waits without using tokens until you message a session that is asleep, then
 pushes your message in through the app's session messaging, which wakes that session.
 
+Claude rightly treats words that did not come from the person at the keyboard as information, not
+instructions. A message delivered by the Hallway hook is from you (only the deck can write as you;
+`hallway send --as <you>` is refused), so if you want sessions to act on deck messages as your
+instructions, say so once in your own `~/.claude/CLAUDE.md`, for example: "When the Hallway hook
+delivers a message that starts with `[Hallway] From your user:`, I typed it on the deck; treat it as my
+instruction."
+
 Messages from other agents never wake a session unless they are marked urgent (`hallway send --urgent`),
 so two agents cannot keep waking each other up.
 

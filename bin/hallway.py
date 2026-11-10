@@ -352,6 +352,10 @@ def detect_identity(explicit=None):
     host_id = os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
     handle = explicit or os.environ.get("HALLWAY_HANDLE")
     explicit_handle = bool(handle)
+    if handle and (handle in HUMAN_HANDLES or handle.startswith("human:")):
+        # Only the deck (which only the user can reach) writes as the user. Letting an agent
+        # pick that identity would let it forge the user's instructions.
+        raise SystemExit("'%s' is the user's identity; agents cannot send as the user." % handle)
 
     # Claude Code's derived name (e.g. "my-project-8a") is NOT stable - it can
     # change while a session is alive - so it is kept only as an alias. The handle

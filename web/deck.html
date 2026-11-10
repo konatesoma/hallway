@@ -467,8 +467,9 @@ function render() {
   const att = attention(), live = S.sessions.filter(s => s.live).length;
   const nw = sessionsBy("wait").length, nb = sessionsBy("block").length;
   $("#cLive").innerHTML = `<span class="dot" style="background:var(--green);box-shadow:0 0 8px var(--green)"></span>${live} SESSIONS ONLINE`;
-  $("#cWait").innerHTML = `<span class="dot" style="background:var(--amber);${nw ? "animation:blink 1.2s infinite" : ""}"></span>${nw} WAITING ON YOU`;
-  $("#cWait").classList.toggle("zero", !nw);
+  const nAll = nw + ledgerNeeds().length;
+  $("#cWait").innerHTML = `<span class="dot" style="background:var(--amber);${nAll ? "animation:blink 1.2s infinite" : ""}"></span>${nAll} WAITING ON YOU`;
+  $("#cWait").classList.toggle("zero", !nAll);
   $("#cBlock").textContent = nb + " BLOCKED"; $("#cBlock").classList.toggle("zero", !nb);
   $("#cMsgs").textContent = S.messages_today + " MESSAGES TODAY";
   const dp = S.dispatcher || {state:"none"}, dc = $("#cDisp");
@@ -493,11 +494,31 @@ function finished() {
   const seen = new Set();
   return out.sort((a, b) => b.at - a.at).filter(x => !seen.has(x.s.handle) && seen.add(x.s.handle)).slice(0, 8);
 }
+function ledgerNeeds() {
+  if (!L) return [];
+  const sessWaiting = new Set(attention().map(s => s.handle));
+  return L.rows.filter(r => bucketOf(r) === "you" && !(r.session && sessWaiting.has(r.session.handle)))
+    .sort((a, z) => (lSince(z) || 0) - (lSince(a) || 0));
+}
+function ledgerCard(r) {
+  const d = document.createElement("div"); d.className = "need";
+  const lc = r.jira && r.jira.last_comment;
+  const src = r.source === "jira" ? "JIRA" : r.source === "github" ? "GITHUB" : "LEDGER";
+  d.innerHTML = `<div class="n1"><span>${src} · ${esc(r.ticket)}${r.project ? " · " + esc(r.project.toUpperCase()) : ""}</span><span>${lSince(r) ? ago(lSince(r)) : ""}</span></div>
+    <div class="n2">${esc(r.title || r.ticket)}</div>
+    <div class="n3">${esc(short(lc && !lc.by_me ? lc.author + ": " + lc.excerpt : (r.need || r.status), 240))}</div>
+    <div class="act"><button class="btn p" data-a="open">OPEN IN LEDGER</button>${(r.source === "jira" || r.jira_alert) ? `<button class="btn" data-a="done">MARK DONE</button>` : ""}</div>`;
+  d.querySelector('[data-a="open"]').onclick = () => { lOpen = r.ticket + "|" + (r.pr || "") + "|" + (r.session ? r.session.handle : ""); lFilter = "all"; location.hash = "#ledger"; };
+  const dn = d.querySelector('[data-a="done"]'); if (dn) dn.onclick = async () => { await ackTicket(r); render(); };
+  return d;
+}
 function renderNeedList(el, att, opts) {
   if (editing() && el.contains(document.activeElement)) return;
   el.innerHTML = "";
-  if (!att.length) { el.innerHTML = `<div class="empty"><b>Nothing needs you.</b>${(n => n === 1 ? "1 session is" : n + " sessions are")(S.sessions.filter(s => s.state === "work").length)} working. When one finishes by asking you something, it shows up here. To message any session, tap it.</div>`; return; }
+  const extra = ledgerNeeds();
+  if (!att.length && !extra.length) { el.innerHTML = `<div class="empty"><b>Nothing needs you.</b>${(n => n === 1 ? "1 session is" : n + " sessions are")(S.sessions.filter(s => s.state === "work").length)} working. When one finishes by asking you something, it shows up here. To message any session, tap it.</div>`; return; }
   for (const s of att) el.appendChild(needCard(s, opts));
+  for (const r of extra) el.appendChild(ledgerCard(r));
 }
 function renderFinished(el) {
   const f = finished(); el.innerHTML = f.length ? "" : `<div class="empty" style="padding:8px 16px">Nothing finished yet today.</div>`;
@@ -506,7 +527,7 @@ function renderFinished(el) {
   return f.length;
 }
 function renderDeck(att) {
-  $("#needCount").textContent = att.length + " OPEN";
+  $("#needCount").textContent = (att.length + ledgerNeeds().length) + " OPEN";
   renderNeedList($("#needList"), att, {});
   $("#finCount").textContent = renderFinished($("#finList"));
   buildOrbit();
@@ -749,7 +770,7 @@ let ringSig = "";
 function renderGlance(att) {
   const nw = sessionsBy("wait").length;
   $("#gTitle").textContent = nw ? nw + " need" + (nw === 1 ? "s" : "") + " you" : "All clear";
-  $("#gNeedN").textContent = att.length;
+  $("#gNeedN").textContent = att.length + ledgerNeeds().length;
   renderNeedList($("#gNeed"), att, {phone:true, group:true});
   renderFinished($("#gFin"));
   const order = {wait:0, block:1, work:2, idle:3, done:4}, list = $("#gList");
@@ -816,7 +837,7 @@ function whoCell(r) {
 }
 function lSince(r) { const ts = r.updated || (r.pr_live && Date.parse(r.pr_live.updated) / 1000) || 0; return ts; }
 async function loadLedger() {
-  try { const res = await fetch("/api/ledger", {cache:"no-store"}); if (!res.ok) throw 0; L = await res.json(); if (VIEW === "ledger") renderLedger(); } catch (e) {}
+  try { const res = await fetch("/api/ledger", {cache:"no-store"}); if (!res.ok) throw 0; L = await res.json(); if (VIEW === "ledger") renderLedger(); else if (S) render(); } catch (e) {}
 }
 function renderLedger() {
   if (!L) return;
@@ -950,7 +971,8 @@ $("#lq").oninput = e => { lQ = e.target.value; renderLedger(); };
 $("#lDone").onclick = () => { lShowDone = !lShowDone; renderLedger(); };
 document.querySelectorAll("[data-g]").forEach(b => b.onclick = () => { lGroup = b.dataset.g; try { localStorage.setItem("hallway.lgroup", lGroup); } catch (e) {} renderLedger(); });
 $("#lOld").onclick = () => { lShowOld = !lShowOld; renderLedger(); };
-setInterval(() => { if (VIEW === "ledger" && !document.hidden && !editing()) loadLedger(); }, 15000);
+setInterval(() => { if (!document.hidden && !editing()) loadLedger(); }, 15000);
+loadLedger();
 
 /* ------------------------------------------------------------------ clock */
 setInterval(() => { const stale = Date.now() - lastOk > 15000;

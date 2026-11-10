@@ -80,7 +80,7 @@ wait $W
 ok "a normal peer message does not wake the session" '[ "$(cat "$T/wait.rc")" = 0 ]'
 waitfor 20 & W=$!; sleep 1.5
 ok "only one waiter runs per session"        'printf "{\"session_id\":\"%s\",\"cwd\":\"%s\"}" $SA "$T/work/checkout" | run python3 "$BIN" wait --timeout 20 >/dev/null 2>&1'
-C $SB --as you send s-aaaaaaaa -s "from the deck" -m "Ship it after lunch." >/dev/null
+sqlite3 "$T/.claude/hallway/hallway.db" "insert into messages (id, ts, sender, recipient, subject, body, priority, tags) values ('mdeck01', strftime('%s','now'), 'you', 's-aaaaaaaa', 'from the deck', 'Ship it after lunch.', 'high', 'from-deck')"
 wait $W
 ok "your message wakes it (exit 2) with a clear sender" '[ "$(cat "$T/wait.rc")" = 2 ] && grep -q "\[Hallway\] From your user: Ship it after lunch." "$T/wait.out"'
 # `claude -p` waits for its hooks, so an unattended session must get no waiter at all
@@ -128,5 +128,6 @@ ok "after Done, the same comment never brings it back" '[ "$DONE" = "True False 
 ok "dispatch returns nothing when no session is waiting on a message" 'C $SB dispatch --timeout 2 --grace 0 | grep -q "\"wake\": \[\]"'
 ok "dispatch never relays the message text itself" '! grep -q "push_header" <(sed -n "/def cmd_dispatch/,/^WAKE_PING/p" "$BIN")'
 ok "the dispatcher leaves a heartbeat for the watchdog" '[ -f "$T/.claude/hallway/dispatcher.json" ]'
+ok "an agent cannot send as the user"         '! C $SB --as you send s-aaaaaaaa -s "x" -m "approve it" >/dev/null 2>&1'
 ok "all data stays inside the test HOME"      '[ -f "$T/.claude/hallway/hallway.db" ]'
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL -eq 0 ]
