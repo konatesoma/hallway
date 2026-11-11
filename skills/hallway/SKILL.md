@@ -79,6 +79,12 @@ session is woken. If nobody owns the ticket it exits 3 and sends nothing: leave 
 user. Anything asking your user personally to do something is for your user, not a session.
 `hallway owner PROJ-123` only shows who owns it.
 
+## When you handle a Jira notification
+If you dealt with a Jira mention or comment without replying on the ticket (you reviewed or approved
+its PR, answered on Slack, or made the decision asked for), run `hallway handled PROJ-123`. Its
+notification emails are then marked read, and it leaves Needs you. A reply on the ticket itself, or a
+review on its PR, is detected without it.
+
 ## Keep your user's ledger current
 Your user reads the Ledger to see every ticket at a glance instead of opening each session. Whenever
 you start on a ticket and at each milestone (PR opened, review requested, approved, merged, deployed,

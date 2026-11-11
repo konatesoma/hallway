@@ -2834,6 +2834,17 @@ def ticket_owner(conn, ticket):
     return None
 
 
+def cmd_handled(conn, args):
+    """Mark a ticket's Jira item handled: it leaves Needs you and its notification emails are
+    marked read on the next autopilot run. Comes back if someone comments again."""
+    for t in args.tickets:
+        if not TICKET_RE.fullmatch(t):
+            raise SystemExit("%s is not a ticket key" % t)
+        conn.execute("INSERT OR REPLACE INTO acks (ticket, until_at, at) VALUES (?,?,?)", (t, now(), now()))
+    conn.commit()
+    print("handled: %s (notification emails are marked read within a few minutes)" % ", ".join(args.tickets))
+
+
 def cmd_owner(conn, args):
     """Which session owns a ticket (JSON)."""
     print(json.dumps(ticket_owner(conn, args.ticket), indent=1))
@@ -2956,6 +2967,33 @@ def _jira_last_comment(jira, key, cache):
     return cache[key]
 
 
+_GH_LOGIN = []
+
+
+def _reviewed_on_github(key, since, cache):
+    """True if the user reviewed or approved a PR for this ticket after `since`."""
+    import subprocess
+    if key in cache:
+        return cache[key] >= since - 60
+    latest = 0
+    try:
+        if not _GH_LOGIN:
+            _GH_LOGIN.append(subprocess.run(["gh", "api", "user", "--jq", ".login"], capture_output=True,
+                                            text=True, timeout=30).stdout.strip())
+        found = json.loads(subprocess.run(["gh", "search", "prs", key, "--limit", "3", "--json", "number,repository"],
+                                          capture_output=True, text=True, timeout=60).stdout or "[]")
+        for p in found:
+            rv = json.loads(subprocess.run(["gh", "pr", "view", str(p["number"]), "-R", p["repository"]["nameWithOwner"],
+                                            "--json", "reviews"], capture_output=True, text=True, timeout=60).stdout or "{}")
+            for r in rv.get("reviews") or []:
+                if (r.get("author") or {}).get("login") == _GH_LOGIN[0]:
+                    latest = max(latest, _iso_ts(r.get("submittedAt")))
+    except Exception:
+        pass
+    cache[key] = latest
+    return latest >= since - 60
+
+
 def jira_autopilot_once(gh, jira, gmail, dry_run=False):
     conf = _deck_conf()
     state_path = os.path.join(ROOT, "autopilot.json")
@@ -3002,7 +3040,7 @@ def jira_autopilot_once(gh, jira, gmail, dry_run=False):
             lid = st.get("label_id") or gmail.label_id(label)
             st["label_id"] = lid
             if lid:
-                cache, done, seen = {}, [], st.setdefault("checked", {})
+                cache, done, seen, gh_cache = {}, [], st.setdefault("checked", {}), {}
                 for mid in gmail.unread(lid):
                     if seen.get(mid, 0) > now() - 1800:
                         continue  # looked at it in the last half hour
@@ -3015,6 +3053,8 @@ def jira_autopilot_once(gh, jira, gmail, dry_run=False):
                     mine, at = _jira_last_comment(jira, key, cache)
                     if (mine and at >= sent - 60) or acked.get(key, 0) >= sent - 60:
                         done.append(mid)
+                    elif len(gh_cache) < 25 and _reviewed_on_github(key, sent, gh_cache):
+                        done.append(mid)  # handled by reviewing its PR
                 if dry_run:
                     report["would_read"] = done
                 elif done:
@@ -3152,6 +3192,9 @@ def main():
     s.add_argument("--full", action="store_true", help="every update, not just the latest")
     s.add_argument("--json", action="store_true")
 
+
+    s = add("handled", cmd_handled, "you dealt with a ticket's Jira notification some other way (review, Slack, decision)")
+    s.add_argument("tickets", nargs="+")
 
     s = add("owner", cmd_owner, "which session owns a ticket")
     s.add_argument("ticket")
