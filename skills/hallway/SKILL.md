@@ -67,6 +67,18 @@ Messages that another session pushes into your chat start with a `[Hallway]` lin
 When you push a message into another session yourself, start it with the exact line `hallway notify`
 gives you (the "start it with" line). Never write a peer message so that it reads as if the user said it.
 
+## Passing news about a ticket to whoever owns it
+When you learn something another session needs (a reviewer approved, the approver answered on the
+ticket), don't guess the session and don't broadcast it. Run:
+```bash
+hallway route PROJ-123 -s "PROJ-123: approver answered" -m "1-3 lines: who said what, where, what it unblocks"
+```
+It picks the owner the same way every time (its ledger rows, skipping archived sessions; an open row
+beats a finished one, then a running session, then the most recent) and sends the note as urgent so the
+session is woken. If nobody owns the ticket it exits 3 and sends nothing: leave that item for your
+user. Anything asking your user personally to do something is for your user, not a session.
+`hallway owner PROJ-123` only shows who owns it.
+
 ## Keep your user's ledger current
 Your user reads the Ledger to see every ticket at a glance instead of opening each session. Whenever
 you start on a ticket and at each milestone (PR opened, review requested, approved, merged, deployed,

@@ -2720,7 +2720,7 @@ def cmd_dispatch(conn, args):
             pinged = {}
         titles = session_titles()
         wake = {}
-        for m in conn.execute("SELECT * FROM messages WHERE sender IN (%s) AND recipient IS NOT NULL"
+        for m in conn.execute("SELECT * FROM messages WHERE (sender IN (%s) OR priority='high') AND recipient IS NOT NULL"
                               " AND ts > ? AND ts < ? ORDER BY ts" % ",".join("?" * len(HUMAN_HANDLES)),
                               HUMAN_HANDLES + (now() - 86400, now() - grace)).fetchall():
             h = m["recipient"]
@@ -2795,6 +2795,55 @@ def _dispatcher_watchdog():
             url = "claude://code/continue?session=%s" % st["host"] if st.get("host") else None
             _notify("Hallway dispatcher is asleep",
                     "Messages to sleeping sessions won't be delivered. Open the dispatcher session and send it 'resume'.", url)
+
+
+def ticket_owner(conn, ticket):
+    """The session that owns a ticket, decided the same way every time:
+    its ledger rows, skipping archived sessions; an open row beats a finished one, then a
+    running session beats a sleeping one, then the most recently updated row wins. With no
+    ledger row, a session whose title or branch names the ticket. None if nobody owns it."""
+    titles = session_titles()
+    live = live_handles(conn)
+    cands = []
+    for r in conn.execute("SELECT l.handle, l.status, l.updated, a.session_id, a.title FROM ledger l"
+                          " LEFT JOIN agents a ON a.handle = l.handle WHERE l.ticket=?", (ticket,)):
+        meta = titles.get(r["session_id"] or "") or {}
+        if meta.get("archived"):
+            continue
+        finished = (r["status"] or "").lower() in ("done", "merged")
+        cands.append((finished, r["handle"] not in live, -(r["updated"] or 0),
+                      {"handle": r["handle"], "title": r["title"] or meta.get("title"), "host": meta.get("host"),
+                       "status": r["status"], "live": r["handle"] in live, "via": "ledger"}))
+    if cands:
+        return sorted(cands, key=lambda c: c[:3])[0][3]
+    for sid, meta in titles.items():
+        if meta.get("archived"):
+            continue
+        if ticket.lower() in ((meta.get("title") or "") + " " + (meta.get("branch") or "")).lower():
+            row = conn.execute("SELECT handle FROM agents WHERE session_id=? ORDER BY last_seen DESC LIMIT 1", (sid,)).fetchone()
+            if row:
+                return {"handle": row["handle"], "title": meta.get("title"), "host": meta.get("host"),
+                        "status": None, "live": row["handle"] in live, "via": "title"}
+    return None
+
+
+def cmd_owner(conn, args):
+    """Which session owns a ticket (JSON)."""
+    print(json.dumps(ticket_owner(conn, args.ticket), indent=1))
+
+
+def cmd_route(conn, args):
+    """Send a note about a ticket to the session that owns it, as urgent so it is woken.
+    Exits 3, sending nothing, when no session owns the ticket: leave that item for the user."""
+    owner = ticket_owner(conn, args.ticket)
+    if not owner:
+        print("No session owns %s. Leave it for your user." % args.ticket)
+        raise SystemExit(3)
+    args.target, args.thread, args.in_reply_to, args.tag = owner["handle"], None, None, ["routed"]
+    args.urgent = not args.normal
+    args.subject = args.subject or args.ticket
+    print("-> %s (%s, %s)" % (owner["title"], owner["handle"], "running" if owner["live"] else "asleep"))
+    cmd_send(conn, args)
 
 
 def cmd_hook_start(conn, args):
@@ -2903,6 +2952,16 @@ def main():
     s.add_argument("--full", action="store_true", help="every update, not just the latest")
     s.add_argument("--json", action="store_true")
 
+
+    s = add("owner", cmd_owner, "which session owns a ticket")
+    s.add_argument("ticket")
+
+    s = add("route", cmd_route, "send a note about a ticket to the session that owns it (exit 3 if none)")
+    s.add_argument("ticket")
+    s.add_argument("-s", "--subject")
+    s.add_argument("-m", "--message", dest="message")
+    s.add_argument("--file", help="read the message from a file")
+    s.add_argument("--normal", action="store_true", help="don't mark it urgent (it won't wake the session)")
 
     s = add("ledger", cmd_ledger, "your tickets and where each stands (shown on the deck)")
     s.add_argument("action", nargs="?", default="list", choices=["list", "set", "rm"])
