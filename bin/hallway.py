@@ -579,6 +579,43 @@ def successor(conn, handle, titles=None):
     return new["handle"] if new else "s-" + cur[:8]
 
 
+def predecessors(conn, handle, titles=None):
+    """Handles this session had before a rewind or resume gave it a new id."""
+    row = conn.execute("SELECT session_id FROM agents WHERE handle=?", (handle,)).fetchone()
+    sid = (row["session_id"] if row else "") or ""
+    if not sid:
+        return []
+    titles = titles if titles is not None else session_titles()
+    olds = [k for k, v in titles.items() if v.get("current") == sid]
+    if not olds:
+        return []
+    return [r["handle"] for r in conn.execute(
+        "SELECT handle FROM agents WHERE session_id IN (%s)" % ",".join("?" * len(olds)), olds)]
+
+
+def fold_superseded(conn, titles=None):
+    """Move ledger rows left under a session's old id onto the id it continues as, so a
+    session that was rewound or resumed still owns, updates and removes its rows."""
+    titles = titles if titles is not None else session_titles()
+    moved = 0
+    for r in conn.execute("SELECT DISTINCT l.handle, a.session_id FROM ledger l JOIN agents a ON a.handle=l.handle").fetchall():
+        if not (titles.get(r["session_id"] or "") or {}).get("current"):
+            continue
+        new = successor(conn, r["handle"], titles)
+        if new == r["handle"]:
+            continue
+        for row in conn.execute("SELECT * FROM ledger WHERE handle=?", (r["handle"],)).fetchall():
+            mine = conn.execute("SELECT updated FROM ledger WHERE ticket=? AND handle=?", (row["ticket"], new)).fetchone()
+            if not mine:
+                conn.execute("UPDATE ledger SET handle=? WHERE ticket=? AND handle=?", (new, row["ticket"], r["handle"]))
+                moved += 1
+            else:
+                conn.execute("DELETE FROM ledger WHERE ticket=? AND handle=?", (row["ticket"], r["handle"]))
+    if moved:
+        conn.commit()
+    return moved
+
+
 def resolve(conn, target):
     found = _resolve(conn, target)
     return successor(conn, found) if found else found
@@ -2027,7 +2064,13 @@ def cmd_ledger(conn, args):
         if not args.ticket:
             raise SystemExit('Which ticket? e.g. `hallway ledger set PROJ-123 --status "PR open" ...`')
         ticket = args.ticket.strip()
+        olds = predecessors(conn, handle)
         row = conn.execute("SELECT * FROM ledger WHERE ticket=? AND handle=?", (ticket, handle)).fetchone()
+        if not row and olds:  # carry the row over from before a rewind or resume
+            row = conn.execute("SELECT * FROM ledger WHERE ticket=? AND handle IN (%s) ORDER BY updated DESC"
+                               % ",".join("?" * len(olds)), [ticket] + olds).fetchone()
+        for old in olds:
+            conn.execute("DELETE FROM ledger WHERE ticket=? AND handle=?", (ticket, old))
         vals = {f: (row[f] if row else None) for f in LEDGER_FIELDS}
         for f in LEDGER_FIELDS:
             v = getattr(args, f)
@@ -2046,7 +2089,8 @@ def cmd_ledger(conn, args):
                                      ", waiting on " + vals["waiting_on"] if vals["waiting_on"] else ""))
         return
     if args.action == "rm":
-        n = conn.execute("DELETE FROM ledger WHERE ticket=? AND handle=?", (args.ticket, handle)).rowcount
+        n = sum(conn.execute("DELETE FROM ledger WHERE ticket=? AND handle=?", (args.ticket, h)).rowcount
+                for h in [handle] + predecessors(conn, handle))
         conn.commit()
         print("removed" if n else "no such row for this session")
         return
@@ -2247,6 +2291,7 @@ def ledger_state(conn, gh=None, jira=None):
     """Ledger rows from the sessions, joined with live PR state, plus open PRs nobody reported."""
     t = now()
     titles = session_titles()
+    fold_superseded(conn, titles)
     live = live_handles(conn)
     conf = _deck_conf()
     approvers = [a.lower() for a in conf.get("approvers", [])]
