@@ -115,6 +115,15 @@ you (it mentions you, or the ticket is yours) and unanswered. Those appear on th
 session knows about them, rows get a "new Jira comment" flag, and the context document quotes the
 latest comment. Credentials are read from that MCP server's settings at runtime, never copied.
 
+#### Jira autopilot
+
+With `"auto_route_jira": true`, a new Jira comment for you on a ticket a session owns is sent to that
+session (urgent, so it wakes), once per comment; comments on tickets nobody owns stay in Needs you.
+With `"gmail_jira_label": "Jira Notifications"`, Jira notification emails in that Gmail label are marked
+read once your account has replied on the ticket after the email (your sessions comment as you), or you
+marked the item done on the deck. Both run inside the deck service, reusing existing OAuth tokens
+(`gmail_credentials`, `gmail_client`; the token needs `gmail.modify`). Nothing is sent or deleted.
+
 ### On your phone, through Tailscale
 
 The deck only listens on your Mac. [Tailscale](https://tailscale.com) can share it with your own devices

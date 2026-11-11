@@ -655,6 +655,8 @@ def sender_label(conn, handle):
     """
     if handle in HUMAN_HANDLES or (handle or "").startswith("human:"):
         return "your user"
+    if handle == JIRA_SENDER:
+        return "Jira (a new comment, relayed by Hallway)"
     if (handle or "").startswith("bridge:"):
         return "another person's agent (%s) over AgentBridge" % handle[7:]
     row = conn.execute("SELECT title, role FROM agents WHERE handle=?", (handle,)).fetchone() if conn else None
@@ -1839,6 +1841,11 @@ def cmd_deck(conn, args):
                 time.sleep(int(_deck_conf().get("context_every", 600)))
         threading.Thread(target=_publisher, daemon=True).start()
 
+    if (_deck_conf().get("auto_route_jira") or _deck_conf().get("gmail_jira_label")) and not os.environ.get("HALLWAY_NO_AUTOPILOT"):
+        import threading
+        gm = _Gmail(_deck_conf()) if _deck_conf().get("gmail_jira_label") else None
+        threading.Thread(target=_autopilot_loop, args=(gh, jira, gm), daemon=True).start()
+
     if not os.environ.get("HALLWAY_NO_WATCHDOG"):
         import threading
         threading.Thread(target=_dispatcher_watchdog, daemon=True).start()
@@ -2846,6 +2853,199 @@ def cmd_route(conn, args):
     cmd_send(conn, args)
 
 
+# ------------------------------------------------------------------ Jira autopilot
+# Runs inside the deck service, without any Claude session:
+#  1. a new Jira comment for the user on a ticket a session owns is routed to that
+#     session (urgent, so it is woken), once per comment;
+#  2. Jira notification emails in a Gmail label are marked read once the user's
+#     account (which the sessions comment as) has replied on that ticket after the email,
+#     or the user marked the item done on the deck.
+
+JIRA_SENDER = "jira"
+
+
+class _Gmail:
+    """Minimal Gmail API client reusing an existing OAuth token (needs gmail.modify)."""
+
+    def __init__(self, conf):
+        self.creds = os.path.expanduser(conf.get("gmail_credentials", "~/.gmail-mcp/credentials.json"))
+        self.client = os.path.expanduser(conf.get("gmail_client", "~/.gmail-mcp/gcp-oauth.keys.json"))
+        self.access, self.expires = None, 0
+
+    def _token(self):
+        import urllib.request, urllib.parse
+        if self.access and now() < self.expires - 60:
+            return self.access
+        tok = json.load(open(self.creds))
+        tok = tok.get("tokens", tok)
+        cl = json.load(open(self.client))
+        cl = cl.get("installed") or cl.get("web") or cl
+        data = urllib.parse.urlencode({"client_id": cl["client_id"], "client_secret": cl["client_secret"],
+                                       "refresh_token": tok.get("refresh_token") or tok.get("refreshToken"),
+                                       "grant_type": "refresh_token"}).encode()
+        r = json.load(urllib.request.urlopen(urllib.request.Request(
+            cl.get("token_uri", "https://oauth2.googleapis.com/token"), data=data), timeout=30))
+        self.access, self.expires = r["access_token"], now() + int(r.get("expires_in", 3600))
+        return self.access
+
+    def _call(self, method, path, body=None):
+        import urllib.request
+        req = urllib.request.Request("https://gmail.googleapis.com/gmail/v1/users/me/" + path, method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Authorization": "Bearer " + self._token(), "Content-Type": "application/json"})
+        raw = urllib.request.urlopen(req, timeout=60).read()
+        return json.loads(raw) if raw else {}
+
+    def label_id(self, name):
+        for l in self._call("GET", "labels").get("labels", []):
+            if l["name"].lower() == name.lower():
+                return l["id"]
+        return None
+
+    def unread(self, label_id, limit=300):
+        import urllib.parse
+        out, token = [], None
+        while len(out) < limit:
+            q = {"labelIds": label_id, "q": "is:unread", "maxResults": 100}
+            if token:
+                q["pageToken"] = token
+            r = self._call("GET", "messages?" + urllib.parse.urlencode(q))
+            out += [m["id"] for m in r.get("messages", [])]
+            token = r.get("nextPageToken")
+            if not token:
+                break
+        return out[:limit]
+
+    def meta(self, mid):
+        m = self._call("GET", "messages/%s?format=metadata&metadataHeaders=Subject" % mid)
+        subject = next((h["value"] for h in m.get("payload", {}).get("headers", []) if h["name"] == "Subject"), "")
+        return subject, int(m.get("internalDate", "0")) / 1000
+
+    def mark_read(self, ids):
+        for i in range(0, len(ids), 500):
+            self._call("POST", "messages/batchModify", {"ids": ids[i:i + 500], "removeLabelIds": ["UNREAD"]})
+
+
+def _jira_last_comment(jira, key, cache):
+    """(author_is_me, created_ts) of a ticket's latest comment, from the poll or one API call."""
+    if key in cache:
+        return cache[key]
+    issues = jira.snapshot()[0] if jira else {}
+    lc = (issues.get(key) or {}).get("last_comment")
+    if lc is not None or key in issues:
+        cache[key] = (bool(lc and lc["by_me"]), lc["at"] if lc else 0)
+        return cache[key]
+    import base64, urllib.request
+    for site in (jira.sites if jira else []):
+        url, user, token = _Jira._creds(site)
+        if not (url and user and token):
+            continue
+        auth = "Basic " + base64.b64encode(("%s:%s" % (user, token)).encode()).decode()
+        try:
+            def get(path):
+                return json.load(urllib.request.urlopen(urllib.request.Request(
+                    url + path, headers={"Authorization": auth, "Accept": "application/json"}), timeout=30))
+            me = get("/rest/api/2/myself")["accountId"]
+            cs = get("/rest/api/2/issue/%s/comment?orderBy=-created&maxResults=1" % key).get("comments") or []
+            c = cs[0] if cs else None
+            cache[key] = (bool(c and (c.get("author") or {}).get("accountId") == me), _iso_ts(c["created"]) if c else 0)
+            return cache[key]
+        except Exception:
+            continue
+    cache[key] = (False, 0)
+    return cache[key]
+
+
+def jira_autopilot_once(gh, jira, gmail, dry_run=False):
+    conf = _deck_conf()
+    state_path = os.path.join(ROOT, "autopilot.json")
+    try:
+        st = json.load(open(state_path))
+    except Exception:
+        st = {}
+    routed = st.setdefault("routed", {})
+    conn = connect()
+    report = {"routed": 0, "read": 0, "would_route": [], "would_read": []}
+    first = not st.get("seeded")
+    try:
+        acked = {r["ticket"]: r["until_at"] for r in conn.execute("SELECT ticket, until_at FROM acks")}
+        # 1. route new comments for the user to the session that owns the ticket
+        if conf.get("auto_route_jira") and jira:
+            for key, ji in jira.snapshot()[0].items():
+                lc = ji.get("last_comment")
+                if not (lc and lc.get("for_me")) or now() - lc["at"] > 2 * 86400:
+                    continue
+                if lc["at"] <= routed.get(key, 0) or lc["at"] <= acked.get(key, 0):
+                    continue
+                owner = ticket_owner(conn, key)
+                if dry_run:
+                    report["would_route"].append((key, lc["author"], owner["title"] if owner else None))
+                    continue
+                routed[key] = lc["at"]
+                if first or not owner:
+                    continue  # first run only records what exists; unowned items stay in Needs you
+                conn.execute("INSERT OR IGNORE INTO agents (handle, kind, title, first_seen, last_seen) VALUES (?,?,?,?,?)",
+                             (JIRA_SENDER, "service", "Jira", now(), now()))
+                conn.execute("INSERT INTO messages (id, ts, sender, recipient, channel, subject, body, thread,"
+                             " in_reply_to, priority, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                             (short_id(), now(), JIRA_SENDER, owner["handle"], None,
+                              "%s: new Jira comment from %s" % (key, lc["author"]),
+                              "%s commented on %s (%s):\n\"%s\"\n%s\n\nRead the full comment, do what's needed, reply on the "
+                              "ticket, and update your Ledger row. Ask your user before merging or deploying anything."
+                              % (lc["author"], key, ji.get("summary", ""), lc["excerpt"], ji.get("url", "")),
+                              None, None, "high", "jira-comment"))
+                report["routed"] += 1
+            conn.commit()
+        # 2. mark notification emails read once the ticket has been answered
+        label = conf.get("gmail_jira_label")
+        if label and gmail:
+            lid = st.get("label_id") or gmail.label_id(label)
+            st["label_id"] = lid
+            if lid:
+                cache, done, seen = {}, [], st.setdefault("checked", {})
+                for mid in gmail.unread(lid):
+                    if seen.get(mid, 0) > now() - 1800:
+                        continue  # looked at it in the last half hour
+                    seen[mid] = now()
+                    subject, sent = gmail.meta(mid)
+                    m = TICKET_RE.search(subject or "")
+                    if not m:
+                        continue
+                    key = m.group(0)
+                    mine, at = _jira_last_comment(jira, key, cache)
+                    if (mine and at >= sent - 60) or acked.get(key, 0) >= sent - 60:
+                        done.append(mid)
+                if dry_run:
+                    report["would_read"] = done
+                elif done:
+                    gmail.mark_read(done)
+                    report["read"] = len(done)
+                st["checked"] = {k: v for k, v in seen.items() if v > now() - 86400}
+    finally:
+        conn.close()
+        if not dry_run:
+            st["seeded"] = True
+            try:
+                tmp = state_path + ".tmp"
+                json.dump(st, open(tmp, "w"))
+                os.replace(tmp, state_path)
+            except OSError:
+                pass
+    return report
+
+
+def _autopilot_loop(gh, jira, gmail):
+    time.sleep(120)  # let the first Jira poll land
+    while True:
+        try:
+            r = jira_autopilot_once(gh, jira, gmail)
+            if r["routed"] or r["read"]:
+                print("autopilot: routed %d Jira comment(s), marked %d email(s) read" % (r["routed"], r["read"]))
+        except Exception as e:
+            print("autopilot: failed (%s)" % e)
+        time.sleep(int(_deck_conf().get("autopilot_every", 300)))
+
+
 def cmd_hook_start(conn, args):
     """Plugin SessionStart hook: install the shim, then print recent unread mail and the
     roster of other running sessions (stdout becomes the session's startup context)."""
@@ -2983,6 +3183,9 @@ def main():
     s.add_argument("--publish", action="store_true", help="write it to the Google Doc now")
     s.add_argument("--github", action="store_true", help="include live PR state from GitHub (slower)")
     s.add_argument("--jira", action="store_true", help="include Jira tickets and comments (needs jira_sites)")
+
+    s = add("autopilot", lambda c, a: print(json.dumps(jira_autopilot_once(None, None, None, dry_run=True), indent=1)),
+            "(debug) show what the Jira autopilot would do")
 
     s = add("deck", cmd_deck, "serve the live deck (localhost; see README for phones)")
     s.add_argument("--port", type=int, default=5055)
