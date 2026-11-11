@@ -241,7 +241,7 @@ def session_titles(max_age=90):
 
 
 def _scan_titles():
-    out = {}
+    out, prior = {}, {}
     for root in TITLES_DIRS:
         try:
             names = os.listdir(root)
@@ -273,6 +273,14 @@ def _scan_titles():
                                 "cwd": rec.get("cwd"), "archived": rec.get("isArchived"),
                                 "pr": rec.get("prNumber"), "pr_state": rec.get("prState"),
                                 "active": active, "host": fn[:-5]}
+                    for old in rec.get("priorCliSessionIds") or []:
+                        if old and old != cid:
+                            prior[old] = cid
+    # A rewind or resume gives the same sidebar session a new CLI id. The old id still maps to
+    # it (so it can be woken), marked with the id it continues as.
+    for old, cid in prior.items():
+        if old not in out and cid in out:
+            out[old] = dict(out[cid], current=cid)
     return out
 
 
@@ -560,7 +568,23 @@ def sync_live_sessions(conn):
         conn.commit()
 
 
+def successor(conn, handle, titles=None):
+    """The handle a session continues as after a rewind or resume, or the handle itself."""
+    row = conn.execute("SELECT session_id FROM agents WHERE handle=?", (handle,)).fetchone()
+    cur = ((titles if titles is not None else session_titles()).get((row["session_id"] if row else "") or "")
+           or {}).get("current")
+    if not cur:
+        return handle
+    new = conn.execute("SELECT handle FROM agents WHERE session_id=?", (cur,)).fetchone()
+    return new["handle"] if new else "s-" + cur[:8]
+
+
 def resolve(conn, target):
+    found = _resolve(conn, target)
+    return successor(conn, found) if found else found
+
+
+def _resolve(conn, target):
     """Turn whatever the caller typed into a real handle."""
     target = target.lstrip("@")
     if conn.execute("SELECT 1 FROM agents WHERE handle=?", (target,)).fetchone():
@@ -1579,8 +1603,8 @@ def deck_state(conn):
     for r in conn.execute("SELECT * FROM agents WHERE kind='session'").fetchall():
         h = r["handle"]
         meta = titles.get(r["session_id"] or "") or {}
-        if meta.get("archived"):
-            continue
+        if meta.get("archived") or meta.get("current"):
+            continue  # archived, or continued under a new id after a rewind or resume
         log = last.get(h, [])
         latest = log[-1] if log else None
         active = max(r["last_seen"] or 0, meta.get("active") or 0, latest["at"] if latest else 0)
@@ -2731,6 +2755,11 @@ def cmd_dispatch(conn, args):
                               " AND ts > ? AND ts < ? ORDER BY ts" % ",".join("?" * len(HUMAN_HANDLES)),
                               HUMAN_HANDLES + (now() - 86400, now() - grace)).fetchall():
             h = m["recipient"]
+            new = successor(conn, h, titles)
+            if new != h:
+                conn.execute("UPDATE messages SET recipient=? WHERE id=?", (new, m["id"]))
+                conn.commit()
+                h = new
             if h in wake or now() - pinged.get(h, 0) < 600:
                 continue
             if conn.execute("SELECT 1 FROM notified WHERE message_id=? AND handle=?", (m["id"], h)).fetchone() \
@@ -2752,12 +2781,22 @@ def cmd_dispatch(conn, args):
             beat(exited=now())
             print(json.dumps({"wake": [{"session_id": host, "message": WAKE_PING} for host in wake.values()]}, indent=1))
             return
-        if deadline and now() > deadline:
-            print(json.dumps({"wake": []}))
+        if (deadline and now() > deadline) or _newer_installed():
+            print(json.dumps({"wake": []}))  # the dispatcher session simply runs it again
             return
         time.sleep(3)
         conn.close()
         conn = connect()
+
+
+def _newer_installed():
+    """True once a newer plugin version than this running copy is installed."""
+    mine = _version_of(os.path.abspath(__file__))
+    try:
+        theirs = _version_of(open(os.path.join(HOME, ".local", "bin", "hallway")).read())
+    except OSError:
+        return False
+    return bool(mine and theirs and theirs > mine)
 
 
 WAKE_PING = ("Hallway wake-up ping. This carries no task and no instruction. "
