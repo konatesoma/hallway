@@ -2213,7 +2213,7 @@ class _Jira:
     def __init__(self, sites, every=300):
         import threading
         self.sites, self.every = sites, every
-        self.issues, self.at, self.error = {}, 0, None
+        self.issues, self.at, self.error, self.names = {}, 0, None, {}
         self.lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -2250,6 +2250,17 @@ class _Jira:
                 req = urllib.request.Request(url + path, headers={"Authorization": auth, "Accept": "application/json"})
                 return json.load(urllib.request.urlopen(req, timeout=30))
             me = get("/rest/api/2/myself")["accountId"]
+            names = self.names.setdefault(url, {})
+
+            def name_of(account):
+                """A mention's display name; Jira stores mentions as account ids."""
+                if account not in names:
+                    try:
+                        names[account] = get("/rest/api/2/user?" + urllib.parse.urlencode(
+                            {"accountId": account})).get("displayName") or "someone"
+                    except Exception:
+                        return "someone"  # not cached, so it is retried next poll
+                return names[account]
 
             def search(jql, fields):
                 q = urllib.parse.urlencode({"jql": jql, "fields": fields, "maxResults": 100})
@@ -2266,7 +2277,7 @@ class _Jira:
                 lc = None
                 if last:
                     body = last.get("body") or ""
-                    text = re.sub(r"\[~accountid:[^\]]+\]", "@someone", body)
+                    text = re.sub(r"\[~accountid:([^\]]+)\]", lambda m: "@" + name_of(m.group(1)), body)
                     text = re.sub(r"\{[a-z]+(:[^}]*)?\}|\[([^|\]]+)\|[^\]]+\]", lambda m: m.group(2) or "", text)
                     by_me = (last.get("author") or {}).get("accountId") == me
                     mentions = me in body
