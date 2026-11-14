@@ -810,7 +810,7 @@ function renderGlance(att) {
 /* ================================================================ ledger */
 let L = null, lSub = null, lFilter = "all", lQ = "", lOpen = null, lShowDone = false, lShowOld = false, lScrollTo = null;
 let lGroup = (() => { try { return localStorage.getItem("hallway.lgroup") || "status"; } catch (e) { return "status"; } })();
-const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", todo:"#c3a6ff", moving:"#5ef2ff", release:"#c3a6ff", hold:"#7f99a7", done:"#62ffa8"};
+const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", todo:"#ff7ac8", moving:"#5ef2ff", release:"#c3a6ff", hold:"#7f99a7", done:"#62ffa8"};
 const STCOL = s => /fail|block|changes/i.test(s) ? "#ff5470" : /ready|approved|merged|done|in test/i.test(s) ? "#62ffa8" :
   /decision|waiting/i.test(s) ? "#a99bff" : /review/i.test(s) ? "#6aa8ff" : /hold|draft/i.test(s) ? "#7f99a7" : "#5ef2ff";
 const PCOL = ["#a99bff", "#6aa8ff", "#62ffa8", "#ff8fb1", "#ffd36e", "#7ff0d0"];
