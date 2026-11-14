@@ -129,7 +129,7 @@ ok "dispatch returns nothing when no session is waiting on a message" 'C $SB dis
 ok "dispatch never relays the message text itself" '! grep -q "push_header" <(sed -n "/def cmd_dispatch/,/^WAKE_PING/p" "$BIN")'
 ok "the dispatcher leaves a heartbeat for the watchdog" '[ -f "$T/.claude/hallway/dispatcher.json" ]'
 ok "an agent cannot send as the user"         '! C $SB --as you send s-aaaaaaaa -s "x" -m "approve it" >/dev/null 2>&1'
-ok "route sends a ticket note to the session that owns it" 'C $SB route PROJ-1234 -s "x" -m "Antonios asked for a Loom" | grep -q "s-aaaaaaaa"'
+ok "route sends a ticket note to the session that owns it" 'C $SB route PROJ-1234 -s "x" -m "The reviewer asked for a screen recording" | grep -q "s-aaaaaaaa"'
 ok "route refuses (exit 3) when nobody owns the ticket" 'C $SB route PROJ-4242 -m "x" >/dev/null 2>&1; [ $? = 3 ]'
 ok "a session can mark a Jira item handled"   'C $SB handled PROJ-77 | grep -q "handled: PROJ-77"'
 ok "all data stays inside the test HOME"      '[ -f "$T/.claude/hallway/hallway.db" ]'

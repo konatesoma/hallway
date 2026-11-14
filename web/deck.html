@@ -184,7 +184,9 @@ button,textarea{font:inherit;color:inherit}
 #ledger h1{font:600 28px var(--sans);margin:0;color:#fff}
 #ledger .lsub{color:var(--dim);font-size:14px;margin:6px 0 20px}
 #ledger .lsub b{color:var(--text);font-weight:500}
-.lcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.lcards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+.lsubs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+.lsubs .lchip b{color:var(--text);margin-left:6px;font-weight:600}
 .lcard{all:unset;box-sizing:border-box;cursor:pointer;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#0b1520;position:relative;overflow:hidden}
 .lcard:hover{border-color:var(--line2)}
 .lcard.on{border-color:var(--c);box-shadow:0 0 0 1px var(--c) inset,0 0 30px color-mix(in srgb,var(--c) 18%,transparent)}
@@ -309,6 +311,7 @@ body.phone .top{display:none}
   <h1>Where everything stands</h1>
   <div class="lsub">Every ticket your sessions are working on, kept current by the sessions themselves, plus every open PR of yours on GitHub. <b>Click a row</b> for details.</div>
   <div class="lcards" id="lcards"></div>
+  <div class="lsubs" id="lsubs" hidden></div>
   <div class="lbar">
     <div class="lsearch"><span style="color:var(--dim)">⌕</span><input id="lq" placeholder="Search a ticket, PR, person or word…"></div>
     <span class="lgrp"><button class="lchip" data-g="status">By status</button><button class="lchip" data-g="project">By project</button></span><button class="lchip" id="lDone">Show done</button><button class="lchip" id="lOld" hidden></button>
@@ -516,7 +519,7 @@ function ledgerCard(r) {
     <div class="act"><button class="btn p" data-a="open">OPEN IN LEDGER</button>${(r.source === "jira" || r.jira_alert) ? `<button class="btn" data-a="done">MARK DONE</button>` : ""}</div>`;
   d.querySelector('[data-a="open"]').onclick = () => {
     lOpen = r.ticket + "|" + (r.pr || "") + "|" + (r.session ? r.session.handle : "");
-    lFilter = "all"; lQ = ""; const q = $("#lq"); if (q) q.value = "";
+    lFilter = "all"; lSub = null; lQ = ""; const q = $("#lq"); if (q) q.value = "";
     if (bucketOf(r) === "done") lShowDone = true;
     lScrollTo = lOpen; location.hash = "#ledger"; };
   const dn = d.querySelector('[data-a="done"]'); if (dn) dn.onclick = async () => { await ackTicket(r); render(); };
@@ -804,7 +807,7 @@ function renderGlance(att) {
 
 
 /* ================================================================ ledger */
-let L = null, lFilter = "all", lQ = "", lOpen = null, lShowDone = false, lShowOld = false, lScrollTo = null;
+let L = null, lSub = null, lFilter = "all", lQ = "", lOpen = null, lShowDone = false, lShowOld = false, lScrollTo = null;
 let lGroup = (() => { try { return localStorage.getItem("hallway.lgroup") || "status"; } catch (e) { return "status"; } })();
 const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", todo:"#c3a6ff", moving:"#5ef2ff", release:"#3fd4c8", hold:"#7f99a7", done:"#62ffa8"};
 const STCOL = s => /fail|block|changes/i.test(s) ? "#ff5470" : /ready|approved|merged|done|in test/i.test(s) ? "#62ffa8" :
@@ -815,6 +818,8 @@ const personName = w => { if (!w) return "Nobody"; if (L && L.people && L.people
 const personColor = w => w === "you" ? "#ffb547" : ["ci", "release", "nobody", "review", "session", ""].includes(w || "") ? "#7f99a7" :
   PCOL[[...w].reduce((a, c) => a + c.charCodeAt(0), 0) % PCOL.length];
 const OLD_DAYS = 45;
+const GROUP = {you:"needs", todo:"needs", approver:"waiting", review:"waiting", moving:"active", hold:"active", release:"shipping", done:"done", old:"old"};
+const subOf = r => r.b === "review" && r.waiting_on === "ci" ? "ci" : r.b;
 function bucketOf(r) {
   const st = (r.status || "").toLowerCase(), w = r.waiting_on || "";
   if (r.source === "github" && r.pr_live && Date.now() / 1000 - Date.parse(r.pr_live.updated) / 1000 > OLD_DAYS * 86400) return "old";
@@ -857,17 +862,26 @@ function renderLedger() {
   if (!L) return;
   const rows = L.rows.map(r => ({...r, b:bucketOf(r)}));
   const apprNames = L.approvers.map(personName).join(", ");
-  const B = {you:["NEEDS YOU", "Decisions only you can make"], approver:["WAITING ON APPROVAL", apprNames ? "From " + apprNames : "Sign-offs and release go"],
-    review:["WAITING ON REVIEW OR CI", "A teammate, a reviewer or CI"], todo:["ASSIGNED TO YOU, NO SESSION", "Yours in Jira, not started here"], moving:["IN PROGRESS", "A session is working on it"],
-    release:["IN TEST / NEXT RELEASE", "Merged or tested, waiting to ship"], hold:["ON HOLD", "Parked on purpose"], done:["DONE", "Last 7 days"]};
+  // Four groups on top; the finer split is a filter inside each group.
+  const G = {needs:["NEEDS YOU", "Your decisions, and work not started", LCOL.you],
+    waiting:["WAITING ON OTHERS", "A review, CI" + (L.approvers.length ? ", or an approval" : " or a person"), LCOL.review],
+    active:["IN PROGRESS", "A session is on it, or it's parked", LCOL.moving],
+    shipping:["IN TEST / SHIPPING", "Merged or tested, waiting to ship", LCOL.release]};
+  const SUB = {needs:[["you", "Your decisions"], ["todo", "Assigned, not started"]],
+    waiting:[...(L.approvers.length ? [["approver", "Approval" + (apprNames ? " from " + apprNames : "")]] : []), ["review", "Review or a person"], ["ci", "CI"]],
+    active:[["moving", "Working"], ["hold", "On hold"]], shipping:[]};
   const nOld = rows.filter(r => r.b === "old").length;
   const cards = $("#lcards"); cards.innerHTML = "";
-  for (const [k, [l, h]] of Object.entries(B)) { const n = rows.filter(r => r.b === k).length;
-    const c = document.createElement("button"); c.className = "lcard" + (lFilter === k ? " on" : ""); c.style.setProperty("--c", LCOL[k]);
+  for (const [k, [l, h, col]] of Object.entries(G)) { const n = rows.filter(r => GROUP[r.b] === k).length;
+    const c = document.createElement("button"); c.className = "lcard" + (lFilter === k ? " on" : ""); c.style.setProperty("--c", col);
     c.innerHTML = `<div class="n">${n}</div><div class="l">${l}</div><div class="h">${h}</div>`;
-    c.onclick = () => { lFilter = lFilter === k ? "all" : k; if (k === "done") lShowDone = true; renderLedger(); }; cards.appendChild(c); }
+    c.onclick = () => { lFilter = lFilter === k ? "all" : k; lSub = null; renderLedger(); }; cards.appendChild(c); }
+  const subs = $("#lsubs"), opts = (SUB[lFilter] || []).map(([k, l]) => [k, l, rows.filter(r => subOf(r) === k).length]).filter(x => x[2]);
+  subs.hidden = opts.length < 2; subs.innerHTML = "";
+  for (const [k, l, n] of opts) { const b = document.createElement("button"); b.className = "lchip" + (lSub === k ? " on" : "");
+    b.innerHTML = `${esc(l)}<b>${n}</b>`; b.onclick = () => { lSub = lSub === k ? null : k; renderLedger(); }; subs.appendChild(b); }
   const apprRows = rows.filter(r => r.b === "approver");
-  const bulk = $("#lBulk"); bulk.hidden = !apprRows.length;
+  const bulk = $("#lBulk"); bulk.hidden = !(apprRows.length && (lFilter === "waiting" || lSub === "approver"));
   bulk.textContent = `Copy one message for ${apprNames || "your approver"} (${apprRows.length})`;
   bulk.onclick = () => { const txt = `${personName(L.approvers[0] || "")}, ${apprRows.length} things waiting on your go:\n\n` +
       apprRows.map((r, i) => `${i + 1}. *${r.ticket}* ${r.title}${r.pr_live ? ` (PR #${r.pr_live.number})` : r.pr ? ` (PR #${String(r.pr).split("#").pop()})` : ""}: ${r.need || r.status}`).join("\n") +
@@ -876,7 +890,7 @@ function renderLedger() {
   $("#lDone").classList.toggle("on", lShowDone);
   $("#lOld").textContent = lShowOld ? "Hide old PRs" : `Show old PRs (${nOld})`; $("#lOld").hidden = !nOld; $("#lOld").classList.toggle("on", lShowOld);
   const body = $("#lrows"); body.innerHTML = "";
-  const list = rows.filter(r => (lFilter === "all" || r.b === lFilter) && (lShowDone || r.b !== "done" || lFilter === "done") && (lShowOld || r.b !== "old") &&
+  const list = rows.filter(r => (lFilter === "all" || GROUP[r.b] === lFilter) && (!lSub || subOf(r) === lSub) && (lShowDone || r.b !== "done" || lFilter === "done") && (lShowOld || r.b !== "old") &&
     (!lQ || JSON.stringify(r).toLowerCase().includes(lQ.toLowerCase())));
   if (!list.length) body.innerHTML = `<tr><td colspan="7" class="empty">Nothing here yet. Sessions add their tickets as they reach milestones.</td></tr>`;
   document.querySelectorAll("[data-g]").forEach(b => b.classList.toggle("on", b.dataset.g === lGroup));

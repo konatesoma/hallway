@@ -95,7 +95,7 @@ failing on a PR the row calls ready.
 Every open PR of yours that no session has reported still shows up
 (from `gh search prs --author=@me`), so nothing slips; PRs untouched for 45 days are tucked away.
 Settings live in `~/.claude/hallway/deck.json`: `approvers` (the people who sign off releases, e.g.
-`["alex"]`) get their own "Waiting on approval" card, `jira_url` links ticket keys, and `people` maps GitHub logins to names.
+`["alex"]`) get their own "Approval" filter under "Waiting on others", with a button that copies one message listing everything waiting on them, `jira_url` links ticket keys, and `people` maps GitHub logins to names.
 
 ### A live work context for your AI assistant
 
