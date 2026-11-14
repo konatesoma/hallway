@@ -315,7 +315,7 @@ body.phone .top{display:none}
   <div class="lsubs" id="lsubs" hidden></div>
   <div class="lbar">
     <div class="lsearch"><span style="color:var(--dim)">⌕</span><input id="lq" placeholder="Search a ticket, PR, person or word…"></div>
-    <span class="lgrp"><button class="lchip" data-g="status">By status</button><button class="lchip" data-g="project">By project</button></span><button class="lchip" id="lDone">Show done</button><button class="lchip" id="lOld" hidden></button>
+    <span class="lgrp"><button class="lchip" data-g="status">By status</button><button class="lchip" data-g="project">By project</button></span>
     <button class="lbulk" id="lBulk" hidden></button>
   </div>
   <div class="ltab"><table><thead><tr><th style="width:150px">TICKET</th><th>WHAT IT IS</th><th style="width:160px">STATUS</th><th style="width:150px">PR</th><th style="width:240px">WAITING ON</th><th style="width:80px">SINCE</th><th style="width:120px"></th></tr></thead><tbody id="lrows"></tbody></table></div>
@@ -890,8 +890,6 @@ function renderLedger() {
       apprRows.map((r, i) => `${i + 1}. *${r.ticket}* ${r.title}${r.pr_live ? ` (PR #${r.pr_live.number})` : r.pr ? ` (PR #${String(r.pr).split("#").pop()})` : ""}: ${r.need || r.status}`).join("\n") +
       `\n\nEach question is also on its ticket if you prefer to answer there.`;
     navigator.clipboard.writeText(txt).then(() => toast("Copied. Paste it in Slack."), () => toast("Couldn't copy on this device.")); };
-  $("#lDone").classList.toggle("on", lShowDone);
-  $("#lOld").textContent = lShowOld ? "Hide old PRs" : `Show old PRs (${nOld})`; $("#lOld").hidden = !nOld; $("#lOld").classList.toggle("on", lShowOld);
   const body = $("#lrows"); body.innerHTML = "";
   // Show done / Show old PRs add those rows whatever card is selected.
   const extra = r => (lShowDone && r.b === "done") || (lShowOld && r.b === "old");
@@ -1014,9 +1012,7 @@ async function ackTicket(r, quiet) {
 let lastAck = null;
 function toast(t) { const e = $("#ltoast"); e.textContent = t; e.style.display = "block"; clearTimeout(e._t); e._t = setTimeout(() => e.style.display = "none", 2600); }
 $("#lq").oninput = e => { lQ = e.target.value; renderLedger(); };
-$("#lDone").onclick = () => { lShowDone = !lShowDone; renderLedger(); };
 document.querySelectorAll("[data-g]").forEach(b => b.onclick = () => { lGroup = b.dataset.g; try { localStorage.setItem("hallway.lgroup", lGroup); } catch (e) {} renderLedger(); });
-$("#lOld").onclick = () => { lShowOld = !lShowOld; renderLedger(); };
 setInterval(() => { if (!document.hidden && !editing()) loadLedger(); }, 15000);
 loadLedger();
 
