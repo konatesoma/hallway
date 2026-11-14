@@ -214,6 +214,7 @@ button,textarea{font:inherit;color:inherit}
 .ltab tr.row{cursor:pointer;border-bottom:1px solid rgba(94,242,255,.07)}
 .ltab tr.row:hover{background:rgba(94,242,255,.04)}
 .ltab tr.row.open{background:rgba(94,242,255,.06)}
+.ltab tr.row.past:not(.open){opacity:.5}
 @keyframes lflash{0%,60%{background:rgba(255,181,71,.22)}100%{background:rgba(94,242,255,.06)}}
 .ltab tr.row.lflash{animation:lflash 1.8s ease}
 .ltab td{padding:13px 14px;vertical-align:top;font-size:13.5px}
@@ -894,7 +895,10 @@ function renderLedger() {
   $("#lDone").classList.toggle("on", lShowDone);
   $("#lOld").textContent = lShowOld ? "Hide old PRs" : `Show old PRs (${nOld})`; $("#lOld").hidden = !nOld; $("#lOld").classList.toggle("on", lShowOld);
   const body = $("#lrows"); body.innerHTML = "";
-  const list = rows.filter(r => (lFilter === "all" || GROUP[r.b] === lFilter) && (!lSub || subOf(r) === lSub) && (lShowDone || r.b !== "done" || lFilter === "done") && (lShowOld || r.b !== "old") &&
+  // Show done / Show old PRs add those rows whatever card is selected.
+  const extra = r => (lShowDone && r.b === "done") || (lShowOld && r.b === "old");
+  const list = rows.filter(r => (extra(r) || ((lFilter === "all" || GROUP[r.b] === lFilter) && (!lSub || subOf(r) === lSub)
+      && r.b !== "done" && r.b !== "old")) &&
     (!lQ || JSON.stringify(r).toLowerCase().includes(lQ.toLowerCase())));
   if (!list.length) body.innerHTML = `<tr><td colspan="7" class="empty">Nothing here yet. Sessions add their tickets as they reach milestones.</td></tr>`;
   document.querySelectorAll("[data-g]").forEach(b => b.classList.toggle("on", b.dataset.g === lGroup));
@@ -912,7 +916,7 @@ function renderLedger() {
     for (const r of g) {
       const id = r.ticket + "|" + (r.pr || "") + "|" + (r.session ? r.session.handle : ""), ts = lSince(r);
       const old = ts && Date.now() / 1000 - ts > 86400 && ["you", "approver", "review"].includes(r.b);
-      const tr = document.createElement("tr"); tr.className = "row" + (lOpen === id ? " open" : "");
+      const tr = document.createElement("tr"); tr.className = "row" + (lOpen === id ? " open" : "") + (r.b === "done" || r.b === "old" ? " past" : "");
       tr.innerHTML = `<td><div class="lkey${ticketish(r.ticket) ? "" : " none"}">${esc(r.ticket)}</div><span class="lfrom">${r.session ? esc(r.session.title) : r.source === "github" ? "from GitHub, no session" : r.source === "jira" ? "from Jira, no session" : ""}</span></td>
         <td class="lsum"><b>${esc(r.title || r.ticket)}</b>${r.summary ? `<span>${esc(short(r.summary, 200))}</span>` : ""}</td>
         <td><span class="lst" style="--sc:${STCOL(r.status)}">${esc((r.status || "—").toUpperCase())}</span>${r.outdated ? `<span class="lout" title="${esc(r.outdated)}">⚠ ROW OUTDATED</span>` : ""}${r.jira_alert ? `<span class="lout" style="color:var(--amber)" title="${esc(r.jira_alert)}">💬 NEW JIRA COMMENT</span>` : ""}${r.jira_status ? `<span class="lout" style="color:${/fail|reject|reopen/i.test(r.jira_status) ? "var(--red)" : "var(--dim)"}" title="Jira's status differs from the session's row">JIRA: ${esc(r.jira_status.toUpperCase())}</span>` : ""}${r.jira_done ? `<span class="lout" style="color:var(--green)" title="The session's row says ${esc(r.status)}">JIRA: ${esc(r.jira_done.toUpperCase())}</span>` : ""}</td>
