@@ -872,7 +872,11 @@ function renderLedger() {
     active:[["moving", "Working"], ["hold", "On hold"]], shipping:[]};
   const nOld = rows.filter(r => r.b === "old").length;
   const cards = $("#lcards"); cards.innerHTML = "";
-  for (const [k, [l, h, col]] of Object.entries(G)) { const n = rows.filter(r => GROUP[r.b] === k).length;
+  const nTodo = rows.filter(r => r.b === "todo").length;
+  if (nTodo) G.needs[1] = `+ ${nTodo} assigned to you, not started`;
+  for (const [k, [l, h, col]] of Object.entries(G)) {
+    // The big number is what truly waits on you; tickets nobody started are listed under it.
+    const n = rows.filter(r => k === "needs" ? r.b === "you" : GROUP[r.b] === k).length;
     const c = document.createElement("button"); c.className = "lcard" + (lFilter === k ? " on" : ""); c.style.setProperty("--c", col);
     c.innerHTML = `<div class="n">${n}</div><div class="l">${l}</div><div class="h">${h}</div>`;
     c.onclick = () => { lFilter = lFilter === k ? "all" : k; lSub = null; renderLedger(); }; cards.appendChild(c); }
@@ -900,11 +904,11 @@ function renderLedger() {
     const counts = {}; list.forEach(r => counts[r.project] = (counts[r.project] || 0) + 1);
     groups = Object.fromEntries(Object.keys(counts).sort((a, z) => counts[z] - counts[a]).map(p => [p, [p.toUpperCase(), ""]]));
     keyOf = r => r.project;
-  } else { groups = {...B, ...(lShowOld ? {old:["OLD OPEN PRS", ""]} : {})}; keyOf = r => r.b; }
+  } else { groups = {...G, done:["DONE", "Last 7 days"], ...(lShowOld ? {old:["OLD OPEN PRS", ""]} : {})}; keyOf = r => GROUP[r.b]; }
   for (const k of Object.keys(groups)) {
     const g = list.filter(r => keyOf(r) === k).sort((a, z) => (bOrder[a.b] - bOrder[z.b]) || ((lSince(a) || 9e12) - (lSince(z) || 9e12)));
     if (!g.length) continue;
-    body.insertAdjacentHTML("beforeend", `<tr class="grp" style="--gc:${lGroup === "project" ? "#9fe9f5" : (LCOL[k] || "#7f99a7")}"><td colspan="7">${groups[k][0]}<span>${g.length}${k === "old" ? " · not touched in " + OLD_DAYS + "+ days; close them or ask a session to finish them" : ""}</span></td></tr>`);
+    body.insertAdjacentHTML("beforeend", `<tr class="grp" style="--gc:${lGroup === "project" ? "#9fe9f5" : ((G[k] || [])[2] || LCOL[k] || "#7f99a7")}"><td colspan="7">${groups[k][0]}<span>${g.length}${k === "old" ? " · not touched in " + OLD_DAYS + "+ days; close them or ask a session to finish them" : ""}</span></td></tr>`);
     for (const r of g) {
       const id = r.ticket + "|" + (r.pr || "") + "|" + (r.session ? r.session.handle : ""), ts = lSince(r);
       const old = ts && Date.now() / 1000 - ts > 86400 && ["you", "approver", "review"].includes(r.b);
