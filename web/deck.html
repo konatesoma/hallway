@@ -184,7 +184,7 @@ button,textarea{font:inherit;color:inherit}
 #ledger h1{font:600 28px var(--sans);margin:0;color:#fff}
 #ledger .lsub{color:var(--dim);font-size:14px;margin:6px 0 20px}
 #ledger .lsub b{color:var(--text);font-weight:500}
-.lcards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
+.lcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
 .lcard{all:unset;box-sizing:border-box;cursor:pointer;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#0b1520;position:relative;overflow:hidden}
 .lcard:hover{border-color:var(--line2)}
 .lcard.on{border-color:var(--c);box-shadow:0 0 0 1px var(--c) inset,0 0 30px color-mix(in srgb,var(--c) 18%,transparent)}
@@ -806,7 +806,7 @@ function renderGlance(att) {
 /* ================================================================ ledger */
 let L = null, lFilter = "all", lQ = "", lOpen = null, lShowDone = false, lShowOld = false, lScrollTo = null;
 let lGroup = (() => { try { return localStorage.getItem("hallway.lgroup") || "status"; } catch (e) { return "status"; } })();
-const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", todo:"#c3a6ff", moving:"#5ef2ff", done:"#62ffa8"};
+const LCOL = {you:"#ffb547", approver:"#a99bff", review:"#6aa8ff", todo:"#c3a6ff", moving:"#5ef2ff", release:"#3fd4c8", hold:"#7f99a7", done:"#62ffa8"};
 const STCOL = s => /fail|block|changes/i.test(s) ? "#ff5470" : /ready|approved|merged|done|in test/i.test(s) ? "#62ffa8" :
   /decision|waiting/i.test(s) ? "#a99bff" : /review/i.test(s) ? "#6aa8ff" : /hold|draft/i.test(s) ? "#7f99a7" : "#5ef2ff";
 const PCOL = ["#a99bff", "#6aa8ff", "#62ffa8", "#ff8fb1", "#ffd36e", "#7ff0d0"];
@@ -818,12 +818,14 @@ const OLD_DAYS = 45;
 function bucketOf(r) {
   const st = (r.status || "").toLowerCase(), w = r.waiting_on || "";
   if (r.source === "github" && r.pr_live && Date.now() / 1000 - Date.parse(r.pr_live.updated) / 1000 > OLD_DAYS * 86400) return "old";
-  if (st === "done" || (st === "merged" && (!w || w === "nobody"))) return "done";
+  if (st === "done" || r.jira_done || (st === "merged" && (!w || w === "nobody"))) return "done";
   if (w === "you") return "you";
   if (L.approvers.includes(w.split(/[-_ .@]/)[0])) return "approver";
+  if (/hold|parked/.test(st)) return "hold";
   // Yours in Jira, but no session is on it: not moving, just not started.
   if (r.kind === "assigned" || (r.source === "jira" && w !== "you")) return "todo";
-  if (!w || ["nobody", "release", "session"].includes(w)) return "moving";
+  if (!w || ["nobody", "release", "session"].includes(w))
+    return w === "release" || /in test|merged|ready to merge|deployed/.test(st) ? "release" : "moving";
   return "review";
 }
 const ticketish = k => /^[A-Z][A-Z0-9]{1,9}-\d+$/.test(k);
@@ -856,7 +858,8 @@ function renderLedger() {
   const rows = L.rows.map(r => ({...r, b:bucketOf(r)}));
   const apprNames = L.approvers.map(personName).join(", ");
   const B = {you:["NEEDS YOU", "Decisions only you can make"], approver:["WAITING ON APPROVAL", apprNames ? "From " + apprNames : "Sign-offs and release go"],
-    review:["WAITING ON REVIEW OR CI", "A teammate, a reviewer or CI"], todo:["ASSIGNED TO YOU, NO SESSION", "Yours in Jira, not started here"], moving:["MOVING / IN TEST", "A session is on it"], done:["DONE", "Last 7 days"]};
+    review:["WAITING ON REVIEW OR CI", "A teammate, a reviewer or CI"], todo:["ASSIGNED TO YOU, NO SESSION", "Yours in Jira, not started here"], moving:["IN PROGRESS", "A session is working on it"],
+    release:["IN TEST / NEXT RELEASE", "Merged or tested, waiting to ship"], hold:["ON HOLD", "Parked on purpose"], done:["DONE", "Last 7 days"]};
   const nOld = rows.filter(r => r.b === "old").length;
   const cards = $("#lcards"); cards.innerHTML = "";
   for (const [k, [l, h]] of Object.entries(B)) { const n = rows.filter(r => r.b === k).length;
@@ -877,7 +880,7 @@ function renderLedger() {
     (!lQ || JSON.stringify(r).toLowerCase().includes(lQ.toLowerCase())));
   if (!list.length) body.innerHTML = `<tr><td colspan="7" class="empty">Nothing here yet. Sessions add their tickets as they reach milestones.</td></tr>`;
   document.querySelectorAll("[data-g]").forEach(b => b.classList.toggle("on", b.dataset.g === lGroup));
-  const bOrder = {you:0, approver:1, review:2, todo:3, moving:4, done:5, old:6};
+  const bOrder = {you:0, approver:1, review:2, todo:3, moving:4, release:5, hold:6, done:7, old:8};
   let groups, keyOf;
   if (lGroup === "project") {
     const counts = {}; list.forEach(r => counts[r.project] = (counts[r.project] || 0) + 1);
@@ -894,7 +897,7 @@ function renderLedger() {
       const tr = document.createElement("tr"); tr.className = "row" + (lOpen === id ? " open" : "");
       tr.innerHTML = `<td><div class="lkey${ticketish(r.ticket) ? "" : " none"}">${esc(r.ticket)}</div><span class="lfrom">${r.session ? esc(r.session.title) : r.source === "github" ? "from GitHub, no session" : r.source === "jira" ? "from Jira, no session" : ""}</span></td>
         <td class="lsum"><b>${esc(r.title || r.ticket)}</b>${r.summary ? `<span>${esc(short(r.summary, 200))}</span>` : ""}</td>
-        <td><span class="lst" style="--sc:${STCOL(r.status)}">${esc((r.status || "—").toUpperCase())}</span>${r.outdated ? `<span class="lout" title="${esc(r.outdated)}">⚠ ROW OUTDATED</span>` : ""}${r.jira_alert ? `<span class="lout" style="color:var(--amber)" title="${esc(r.jira_alert)}">💬 NEW JIRA COMMENT</span>` : ""}</td>
+        <td><span class="lst" style="--sc:${STCOL(r.status)}">${esc((r.status || "—").toUpperCase())}</span>${r.outdated ? `<span class="lout" title="${esc(r.outdated)}">⚠ ROW OUTDATED</span>` : ""}${r.jira_alert ? `<span class="lout" style="color:var(--amber)" title="${esc(r.jira_alert)}">💬 NEW JIRA COMMENT</span>` : ""}${r.jira_status ? `<span class="lout" style="color:${/fail|reject|reopen/i.test(r.jira_status) ? "var(--red)" : "var(--dim)"}" title="Jira's status differs from the session's row">JIRA: ${esc(r.jira_status.toUpperCase())}</span>` : ""}${r.jira_done ? `<span class="lout" style="color:var(--green)" title="The session's row says ${esc(r.status)}">JIRA: ${esc(r.jira_done.toUpperCase())}</span>` : ""}</td>
         <td class="lpr">${prCell(r)}</td><td>${whoCell(r)}</td>
         <td class="lsince${old ? " old" : ""}">${ts ? ago(ts) : ""}</td>
         <td class="lactcell">${(r.source === "jira" || r.jira_alert) ? `<button class="lack" title="Hide this until someone comments on the ticket again">Mark done</button>` : ""}</td>`;
@@ -910,6 +913,8 @@ function renderLedger() {
             ${r.pr_live ? `<h4>PULL REQUEST</h4><p>${esc(r.pr_live.title)}${r.pr_live.reviewers.length ? "<br>Review requested from " + esc(r.pr_live.reviewers.join(", ")) : ""}${r.pr_live.mergeable === "conflicting" ? "<br><b style='color:var(--red)'>Merge conflict</b>" : ""}</p>` : ""}
             ${r.outdated ? `<h4 style="color:var(--red)">OUTDATED</h4><p>The ledger says "${esc(r.status)}", but ${esc(r.outdated)}. The session will be reminded the next time it works on it.</p>` : ""}
             ${r.jira && r.jira.last_comment && !r.jira.last_comment.by_me ? `<h4 style="color:${r.jira.last_comment.for_me ? "var(--amber)" : "var(--dim)"}">LATEST JIRA COMMENT · ${esc(r.jira.last_comment.author.toUpperCase())}${r.jira.last_comment.for_me ? " · FOR YOU" : ""}</h4><p>${esc(r.jira.last_comment.excerpt)}</p>` : ""}
+            ${r.more_prs ? `<h4>MORE PULL REQUESTS</h4><p>${r.more_prs.map(p => `<a target="_blank" href="${esc(p.url)}">${esc(p.repo.split("/").pop())} #${p.number}</a>`).join(", ")}</p>` : ""}
+            ${r.also ? `<h4>ALSO TRACKED BY</h4><p>${esc(r.also.join(", "))}</p>` : ""}
             <h4>LAST UPDATED</h4><p>${r.updated ? new Date(r.updated * 1000).toLocaleString() + (r.source === "session" ? " by the session" : "") : "Not reported by a session yet."}</p>
             <div class="lact"><h4>ACT ON IT</h4>
               <select data-to>${sessionOptions(r)}</select>

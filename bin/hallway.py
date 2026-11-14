@@ -2175,6 +2175,10 @@ class _GitHub:
                             latest[who] = r.get("state")
                     if not any(st == "APPROVED" and not _is_bot(w) for w, st in latest.items()):
                         d["review"] = "bot_approved"
+                d["reviews"] = [{"by": (r.get("author") or {}).get("login") or "", "state": r.get("state"),
+                                 "at": _iso_ts(r.get("submittedAt"))} for r in v.get("reviews") or []
+                                if not _is_bot((r.get("author") or {}).get("login"))
+                                and r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED")]
                 d["reviewers"] = [r.get("login") or r.get("name") or "" for r in v.get("reviewRequests") or []]
                 d["branch"] = v.get("headRefName") or ""
                 d["mergeable"] = (v.get("mergeable") or "").lower()
@@ -2218,6 +2222,18 @@ def _checked_out(cwd):
         return None
 
 
+def _ledger_tickets():
+    try:
+        c = connect()
+        try:
+            return sorted({r["ticket"] for r in c.execute("SELECT ticket FROM ledger WHERE updated > ?",
+                                                          (now() - 14 * 86400,)) if TICKET_RE.fullmatch(r["ticket"])})
+        finally:
+            c.close()
+    except Exception:
+        return []
+
+
 class _Jira:
     """Tickets assigned to the user and recent Jira comments, refreshed in the background.
 
@@ -2228,7 +2244,7 @@ class _Jira:
     def __init__(self, sites, every=300):
         import threading
         self.sites, self.every = sites, every
-        self.issues, self.at, self.error, self.names = {}, 0, None, {}
+        self.issues, self.at, self.error, self.names, self.projects = {}, 0, None, {}, {}
         self.lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -2284,7 +2300,23 @@ class _Jira:
                           "summary,status,priority,assignee,comment")
             recent = search("(watcher = currentUser() OR assignee = currentUser() OR reporter = currentUser())"
                             " AND updated >= -7d ORDER BY updated DESC", "summary,status,priority,assignee,comment")
-            for i in mine + recent:
+            # Every ticket a session put on the Ledger, so its row can follow Jira's status
+            # (QA moving it to Done, a release closing it) without the session waking up.
+            if url not in self.projects:
+                try:
+                    self.projects[url] = {p["key"] for p in get("/rest/api/2/project")}
+                except Exception:
+                    pass
+            have = {i["key"] for i in mine + recent}
+            keys = [k for k in _ledger_tickets() if k not in have and k.split("-")[0] in self.projects.get(url, ())]
+            tracked = []
+            for n in range(0, len(keys), 50):
+                try:
+                    tracked += search("key in (%s)" % ",".join(keys[n:n + 50]),
+                                      "summary,status,priority,assignee,comment")
+                except Exception:
+                    pass
+            for i in mine + recent + tracked:
                 f = i["fields"]
                 cs = (f.get("comment") or {}).get("comments") or []
                 last = cs[-1] if cs else None
@@ -2302,6 +2334,7 @@ class _Jira:
                           "for_me": (not by_me) and (mentions or assigned)}
                 found[i["key"]] = {"key": i["key"], "summary": f.get("summary") or "",
                                    "status": (f.get("status") or {}).get("name", ""),
+                                   "done": ((f.get("status") or {}).get("statusCategory") or {}).get("key") == "done",
                                    "priority": (f.get("priority") or {}).get("name", ""),
                                    "url": "%s/browse/%s" % (url, i["key"]), "assigned": assigned,
                                    "last_comment": lc, "site": site.get("name", url)}
@@ -2311,6 +2344,70 @@ class _Jira:
     def snapshot(self):
         with self.lock:
             return dict(self.issues), self.at, self.error
+
+
+def _norm_status(x):
+    return re.sub(r"[^a-z]", "", (x or "").lower())
+
+
+def _route_jira_status(conn, jira, st, first, dry_run, report):
+    """When a Ledger ticket's Jira status changes (QA failed it, someone closed it), tell the
+    session that owns it, unless that session made the change itself."""
+    known = st.setdefault("jira_status", {})
+    rows = {}
+    for r in conn.execute("SELECT ticket, status, handle FROM ledger WHERE updated > ? ORDER BY updated",
+                          (now() - 14 * 86400,)):
+        rows[r["ticket"]] = r
+    for key, ji in jira.snapshot()[0].items():
+        if key not in rows:
+            continue
+        before, after = known.get(key), ji.get("status") or ""
+        known[key] = after
+        if not before or _norm_status(before) == _norm_status(after):
+            continue
+        if _norm_status(rows[key]["status"]) == _norm_status(after):
+            continue  # the session moved it and already updated its row
+        owner = ticket_owner(conn, key)
+        what = "Jira status of %s changed from %s to %s" % (key, before, after)
+        if dry_run:
+            report.setdefault("would_route_status", []).append((key, before, after, owner["title"] if owner else None))
+            continue
+        if first or not owner:
+            continue
+        conn.execute("INSERT OR IGNORE INTO agents (handle, kind, title, first_seen, last_seen) VALUES (?,?,?,?,?)",
+                     (JIRA_SENDER, "service", "Jira", now(), now()))
+        conn.execute("INSERT INTO messages (id, ts, sender, recipient, channel, subject, body, thread,"
+                     " in_reply_to, priority, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (short_id(), now(), JIRA_SENDER, owner["handle"], None, what,
+                      "%s (%s).\n%s\n\nCheck the ticket to see why, do what's needed, and update your Ledger row "
+                      "so it matches. Ask your user before merging or deploying anything." % (what, ji.get("summary", ""),
+                                                                                         ji.get("url", "")),
+                      None, None, "high", "jira-status"))
+        report["routed"] += 1
+    conn.commit()
+
+
+def _one_row_per_ticket(rows):
+    """Several sessions can report the same ticket, and a ticket can have PRs in more than
+    one repo. Keep the most recently updated session row; fold the rest into it."""
+    out, primary = [], {}
+    order = sorted(rows, key=lambda r: (r["source"] != "session", -(r.get("updated") or 0)))
+    for r in order:
+        k = r["ticket"]
+        if not TICKET_RE.fullmatch(k or "") or k not in primary:
+            primary.setdefault(k, r)
+            out.append(r)
+            continue
+        p = primary[k]
+        if r.get("pr_live"):
+            if not p.get("pr_live"):
+                p["pr_live"], p["pr"] = r["pr_live"], r["pr"]
+            elif r["pr_live"]["url"] != p["pr_live"]["url"]:
+                p.setdefault("more_prs", []).append(r["pr_live"])
+        s = (r.get("session") or {}).get("title")
+        if r["source"] == "session" and s and s != (p.get("session") or {}).get("title"):
+            p.setdefault("also", []).append(s)
+    return out
 
 
 def ledger_state(conn, gh=None, jira=None):
@@ -2376,9 +2473,12 @@ def ledger_state(conn, gh=None, jira=None):
                 pr = m
                 if not re.search(r"merged|in test|done|deployed|released", r["status"] or "", re.I):
                     outdated = "the PR was merged after this row was last updated"
+        w = (r["waiting_on"] or "").lower()
+        if "session" in w:
+            w = "session"  # waiting on another of the user's sessions: still moving, not a review
         rows.append({"ticket": r["ticket"], "title": r["title"] or "", "summary": r["summary"] or "",
                      "status": r["status"] or "", "pr": r["pr"] or "", "pr_live": pr, "outdated": outdated,
-                     "waiting_on": (r["waiting_on"] or "").lower(), "need": r["need"] or "",
+                     "waiting_on": w, "need": r["need"] or "",
                      "updated": r["updated"], "session": session_of(r["handle"]), "source": "session"})
     # open PRs that no session has put on the ledger, so nothing slips
     for key, pr in prs.items():
@@ -2434,12 +2534,21 @@ def ledger_state(conn, gh=None, jira=None):
                          "pr": "", "pr_live": None, "waiting_on": "you",
                          "need": "Reply to %s's comment on Jira: %s" % (lc["author"], lc["excerpt"]),
                          "updated": lc["at"], "session": None, "source": "jira", "jira": ji})
-        elif ji["assigned"] and ji["status"].lower() not in ("done", "closed") and key not in acked:
+        elif ji["assigned"] and not ji.get("done") and key not in acked:
             rows.append({"ticket": key, "title": ji["summary"], "summary": "", "status": ji["status"],
                          "pr": "", "pr_live": None, "waiting_on": "nobody",
                          "need": "Assigned to you in Jira (%s); no session is working on it" % ji["status"],
                          "kind": "assigned",
                          "updated": 0, "session": None, "source": "jira", "jira": ji})
+    for r in rows:
+        ji = r.get("jira") or issues.get(r["ticket"])
+        if ji and r["source"] != "jira":
+            r["jira"] = ji
+            if ji.get("done") and (r["status"] or "").lower() != "done":
+                r["jira_done"] = ji["status"]  # QA or a release already finished it in Jira
+            elif _norm_status(ji["status"]) != _norm_status(r["status"]):
+                r["jira_status"] = ji["status"]  # shown beside the row's own status
+    rows = _one_row_per_ticket(rows)
     tp = conf.get("ticket_projects") or {}
     folders = {k: os.path.expanduser(v) for k, v in (conf.get("project_folders") or {}).items()}
     for r in rows:
@@ -3108,6 +3217,74 @@ def _reviewed_on_github(key, since, cache):
     return latest >= since - 60
 
 
+def _route_pr_events(conn, gh, st, first, dry_run, report):
+    prs, merged = gh.snapshot()[0], gh.merged_snapshot()
+    me = _gh_login()
+    seen = st.setdefault("pr_events", {})
+
+    def find(ref, pool):
+        ref = str(ref or "").lstrip("#")
+        if not ref:
+            return None
+        if ref in pool:
+            return pool[ref]
+        hits = [p for k, p in pool.items() if k.endswith("#" + ref)]
+        return hits[0] if len(hits) == 1 else None
+    rows = conn.execute("SELECT * FROM ledger WHERE updated > ? AND pr IS NOT NULL AND pr != ''"
+                        " ORDER BY updated DESC", (now() - 14 * 86400,)).fetchall()
+    done_tickets = set()
+    for r in rows:
+        if r["ticket"] in done_tickets or re.search(r"^done$", r["status"] or "", re.I):
+            continue
+        done_tickets.add(r["ticket"])
+        pr, events = find(r["pr"], prs), []
+        if pr:
+            for rv in pr.get("reviews") or []:
+                if rv["by"] != me and rv["at"] > (r["updated"] or 0):
+                    events.append((rv["at"], "%s %s PR #%s" % (rv["by"], {
+                        "APPROVED": "approved", "CHANGES_REQUESTED": "requested changes on",
+                        "COMMENTED": "left review comments on"}[rv["state"]], pr["number"])))
+        else:
+            m = find(r["pr"], merged)
+            if m and not re.search(r"merged|in test|done|deployed|released", r["status"] or "", re.I):
+                events.append((_iso_ts(m["updated"]), "PR #%s was merged" % m["number"]))
+        key = "%s|%s" % (r["ticket"], r["pr"])
+        new = [e for e in events if e[0] > seen.get(key, 0)]
+        if not new:
+            continue
+        seen[key] = max(e[0] for e in new)
+        owner = ticket_owner(conn, r["ticket"])
+        what = "; ".join(e[1] for e in sorted(new))
+        if dry_run:
+            report.setdefault("would_route_pr", []).append((r["ticket"], what, owner["title"] if owner else None))
+            continue
+        if first or not owner:
+            continue
+        url = (pr or find(r["pr"], merged) or {}).get("url", "")
+        conn.execute("INSERT OR IGNORE INTO agents (handle, kind, title, first_seen, last_seen) VALUES (?,?,?,?,?)",
+                     ("github", "service", "GitHub", now(), now()))
+        conn.execute("INSERT INTO messages (id, ts, sender, recipient, channel, subject, body, thread,"
+                     " in_reply_to, priority, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (short_id(), now(), "github", owner["handle"], None, "%s: %s" % (r["ticket"], what),
+                      "%s (%s).\n%s\n\nRead the review, do what's needed, and update your Ledger row so it shows where "
+                      "%s stands now. Ask your user before merging or deploying anything." % (what, r["title"] or "", url,
+                                                                                         r["ticket"]),
+                      None, None, "high", "github-review"))
+        report["routed"] += 1
+    conn.commit()
+
+
+def _gh_login():
+    import subprocess
+    if not _GH_LOGIN:
+        try:
+            _GH_LOGIN.append(subprocess.run(["gh", "api", "user", "--jq", ".login"], capture_output=True,
+                                            text=True, timeout=30).stdout.strip())
+        except Exception:
+            return ""
+    return _GH_LOGIN[0]
+
+
 def jira_autopilot_once(gh, jira, gmail, dry_run=False):
     conf = _deck_conf()
     state_path = os.path.join(ROOT, "autopilot.json")
@@ -3148,6 +3325,12 @@ def jira_autopilot_once(gh, jira, gmail, dry_run=False):
                               None, None, "high", "jira-comment"))
                 report["routed"] += 1
             conn.commit()
+        # 1a. a Ledger ticket's Jira status changed
+        if conf.get("auto_route_jira") and jira:
+            _route_jira_status(conn, jira, st, first, dry_run, report)
+        # 1b. a person reviewed, or someone merged, a PR on the Ledger: tell the session that owns it
+        if conf.get("auto_route_jira") and gh:
+            _route_pr_events(conn, gh, st, first, dry_run, report)
         # 2. mark notification emails read once the ticket has been answered
         label = conf.get("gmail_jira_label")
         if label and gmail:
