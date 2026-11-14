@@ -2346,6 +2346,15 @@ class _Jira:
             return dict(self.issues), self.at, self.error
 
 
+def _jira_disagrees(row, jira):
+    """Jira's workflow is coarser than the rows ("PR open" vs "In Progress" is normal). Flag
+    only what matters: QA failed or reopened it, or the row says In Test but Jira does not."""
+    j, r = (jira or "").lower(), (row or "").lower()
+    if re.search(r"fail|reject|reopen|cancel|won.?t", j):
+        return True
+    return "in test" in r and not re.search(r"test|qa|review|release|deploy|pre-?prod", j)
+
+
 def _norm_status(x):
     return re.sub(r"[^a-z]", "", (x or "").lower())
 
@@ -2546,7 +2555,7 @@ def ledger_state(conn, gh=None, jira=None):
             r["jira"] = ji
             if ji.get("done") and (r["status"] or "").lower() != "done":
                 r["jira_done"] = ji["status"]  # QA or a release already finished it in Jira
-            elif _norm_status(ji["status"]) != _norm_status(r["status"]):
+            elif _jira_disagrees(r["status"], ji["status"]):
                 r["jira_status"] = ji["status"]  # shown beside the row's own status
     rows = _one_row_per_ticket(rows)
     tp = conf.get("ticket_projects") or {}
