@@ -184,7 +184,7 @@ button,textarea{font:inherit;color:inherit}
 #ledger h1{font:600 28px var(--sans);margin:0;color:#fff}
 #ledger .lsub{color:var(--dim);font-size:14px;margin:6px 0 20px}
 #ledger .lsub b{color:var(--text);font-weight:500}
-.lcards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+.lcards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:12px}
 .lsubs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
 .lsubs .lchip b{color:var(--text);margin-left:6px;font-weight:600}
 .lcard{all:unset;box-sizing:border-box;cursor:pointer;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#0b1520;position:relative;overflow:hidden}
@@ -819,7 +819,7 @@ const personName = w => { if (!w) return "Nobody"; if (L && L.people && L.people
 const personColor = w => w === "you" ? "#ffb547" : ["ci", "release", "nobody", "review", "session", ""].includes(w || "") ? "#7f99a7" :
   PCOL[[...w].reduce((a, c) => a + c.charCodeAt(0), 0) % PCOL.length];
 const OLD_DAYS = 45;
-const GROUP = {you:"needs", todo:"needs", approver:"waiting", review:"waiting", moving:"active", hold:"active", release:"shipping", done:"done", old:"old"};
+const GROUP = {you:"needs", todo:"todo", approver:"waiting", review:"waiting", moving:"active", hold:"active", release:"shipping", done:"done", old:"old"};
 const subOf = r => r.b === "review" && r.waiting_on === "ci" ? "ci" : r.b;
 function bucketOf(r) {
   const st = (r.status || "").toLowerCase(), w = r.waiting_on || "";
@@ -864,20 +864,18 @@ function renderLedger() {
   const rows = L.rows.map(r => ({...r, b:bucketOf(r)}));
   const apprNames = L.approvers.map(personName).join(", ");
   // Four groups on top; the finer split is a filter inside each group.
-  const G = {needs:["NEEDS YOU", "Your decisions, and work not started", LCOL.you],
+  const G = {needs:["NEEDS YOU", "Decisions only you can make", LCOL.you],
+    todo:["NOT STARTED", "Assigned to you, no session yet", LCOL.todo],
     waiting:["WAITING ON OTHERS", "A review, CI" + (L.approvers.length ? ", or an approval" : " or a person"), LCOL.review],
     active:["IN PROGRESS", "A session is on it, or it's parked", LCOL.moving],
     shipping:["IN TEST / SHIPPING", "Merged or tested, waiting to ship", LCOL.release]};
-  const SUB = {needs:[["you", "Your decisions"], ["todo", "Assigned, not started"]],
+  const SUB = {needs:[], todo:[],
     waiting:[...(L.approvers.length ? [["approver", "Approval" + (apprNames ? " from " + apprNames : "")]] : []), ["review", "Review or a person"], ["ci", "CI"]],
     active:[["moving", "Working"], ["hold", "On hold"]], shipping:[]};
   const nOld = rows.filter(r => r.b === "old").length;
   const cards = $("#lcards"); cards.innerHTML = "";
-  const nTodo = rows.filter(r => r.b === "todo").length;
-  if (nTodo) G.needs[1] = `+ ${nTodo} assigned to you, not started`;
   for (const [k, [l, h, col]] of Object.entries(G)) {
-    // The big number is what truly waits on you; tickets nobody started are listed under it.
-    const n = rows.filter(r => k === "needs" ? r.b === "you" : GROUP[r.b] === k).length;
+    const n = rows.filter(r => GROUP[r.b] === k).length;
     const c = document.createElement("button"); c.className = "lcard" + (lFilter === k ? " on" : ""); c.style.setProperty("--c", col);
     c.innerHTML = `<div class="n">${n}</div><div class="l">${l}</div><div class="h">${h}</div>`;
     c.onclick = () => { lFilter = lFilter === k ? "all" : k; lSub = null; renderLedger(); }; cards.appendChild(c); }
