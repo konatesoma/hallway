@@ -2400,7 +2400,8 @@ def _one_row_per_ticket(rows):
     """Several sessions can report the same ticket, and a ticket can have PRs in more than
     one repo. Keep the most recently updated session row; fold the rest into it."""
     out, primary = [], {}
-    order = sorted(rows, key=lambda r: (r["source"] != "session", -(r.get("updated") or 0)))
+    order = sorted(rows, key=lambda r: (r["source"] != "session", r.get("waiting_on") == "session",
+                                        -(r.get("updated") or 0)))
     for r in order:
         k = r["ticket"]
         if not TICKET_RE.fullmatch(k or "") or k not in primary:
@@ -2470,6 +2471,9 @@ def ledger_state(conn, gh=None, jira=None):
     for r in conn.execute("SELECT * FROM ledger WHERE updated > ? ORDER BY updated DESC", (t - 14 * 86400,)):
         if (r["status"] or "").lower() == "done" and t - r["updated"] > 7 * 86400:
             continue
+        a = agents.get(r["handle"])
+        if a and (titles.get(a["session_id"] or "") or {}).get("archived"):
+            continue  # the user closed that session
         pr = find_pr(r["pr"])
         outdated = ""
         if pr:
@@ -3077,6 +3081,75 @@ def cmd_handled(conn, args):
     print("handled: %s (notification emails are marked read within a few minutes)" % ", ".join(args.tickets))
 
 
+PLIST_LABEL = "com.hallway.deck"
+
+
+def cmd_setup(conn, args):
+    """Show what is set up and what is optional, with the exact step for each."""
+    import shutil, subprocess, urllib.request
+    conf, port = _deck_conf(), args.port
+    plist = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
+    if args.service:
+        if sys.platform != "darwin":
+            raise SystemExit("--service sets up a macOS launchd agent. On Linux, run `hallway deck` from a systemd user "
+                             "service or your startup applications; on Windows, from Task Scheduler.")
+        shim = os.path.join(HOME, ".local", "bin", "hallway")
+        log = os.path.join(ROOT, "deck.log")
+        os.makedirs(os.path.dirname(plist), exist_ok=True)
+        with open(plist, "w") as fh:
+            fh.write("""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key><array><string>/bin/sh</string><string>%s</string><string>deck</string><string>--port</string><string>%d</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string><key>PYTHONUNBUFFERED</key><string>1</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+</dict></plist>
+""" % (PLIST_LABEL, shim, port, log, log))
+        uid = os.getuid()
+        subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, PLIST_LABEL)], capture_output=True)
+        r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, plist], capture_output=True, text=True)
+        print("deck service installed: it starts at login and restarts if it stops (%s)" % plist
+              if r.returncode == 0 else "could not load the service: %s" % r.stderr.strip())
+        return
+    try:
+        urllib.request.urlopen("http://127.0.0.1:%d/api/deck" % port, timeout=3)
+        running = True
+    except Exception:
+        running = False
+    has = lambda k: bool(conf.get(k))
+    steps = [
+        ("Messaging between sessions, listeners, Ledger", True,
+         "Done by the plugin install. Nothing to do."),
+        ("Deck running (http://127.0.0.1:%d)" % port, running,
+         "Run `hallway deck` to try it, or `hallway setup --service` to keep it running (macOS)."),
+        ("Deck starts by itself at login", os.path.exists(plist),
+         "`hallway setup --service` (macOS)."),
+        ("GitHub pull requests on the Ledger", bool(shutil.which("gh")),
+         "Install the GitHub CLI and run `gh auth login`."),
+        ("Deck on your phone", bool(shutil.which("tailscale")),
+         "Install Tailscale on the Mac and the phone, then `tailscale serve --bg %d`." % port),
+        ("Approvers (an Approval filter for your manager's sign-offs)", has("approvers"),
+         'Optional. In deck.json: "approvers": ["their-first-name"].'),
+        ("Jira tickets and comments on the Ledger", has("jira_sites"),
+         'Optional. In deck.json: "jira_sites": [{"name": "Work", "credentials_from_mcp": "<your Atlassian MCP server name>"}].'),
+        ("Jira comments and PR reviews sent to the owning session", has("auto_route_jira"),
+         'Optional, needs Jira. In deck.json: "auto_route_jira": true.'),
+        ("Wake sessions the desktop app put to sleep", dispatcher_status().get("state") in ("listening", "restarting"),
+         'Optional. Open one session and tell it: "be the Hallway dispatcher".'),
+    ]
+    print("Hallway setup  (settings file: %s)\n" % DECK_CONF)
+    for name, ok, how in steps:
+        print("  [%s] %s" % ("x" if ok else " ", name))
+        if not ok:
+            print("        %s" % how)
+    print("\nThe README explains each one: https://github.com/konatesoma/hallway#readme")
+
+
 def cmd_owner(conn, args):
     """Which session owns a ticket (JSON)."""
     print(json.dumps(ticket_owner(conn, args.ticket), indent=1))
@@ -3413,7 +3486,9 @@ def cmd_hook_start(conn, args):
           " review requested, merged, deployed, waiting on someone, done), run one line:\n"
           "  hallway ledger set <TICKET> --title \"few words\" --summary \"1-2 lines\" --status \"PR open\""
           " --pr 6102 --waiting-on <you|name|ci|release|nobody> --need \"the exact question\"\n"
-          "Only the fields you pass change. It is how your user sees every ticket at a glance.")
+          "Only the fields you pass change. It is how your user sees every ticket at a glance.\n"
+          "Only for tickets you work on yourself. --waiting-on is whoever acts next (a customer or teammate counts);"
+          " `nobody` only while you are doing the next step.")
 
 
 class _Parser(argparse.ArgumentParser):
@@ -3498,6 +3573,10 @@ def main():
     s.add_argument("--full", action="store_true", help="every update, not just the latest")
     s.add_argument("--json", action="store_true")
 
+
+    s = add("setup", cmd_setup, "what is set up, what is optional, and how to turn each on")
+    s.add_argument("--service", action="store_true", help="keep the deck running at login (macOS launchd)")
+    s.add_argument("--port", type=int, default=5055)
 
     s = add("handled", cmd_handled, "you dealt with a ticket's Jira notification some other way (review, Slack, decision)")
     s.add_argument("tickets", nargs="+")

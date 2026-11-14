@@ -132,5 +132,6 @@ ok "an agent cannot send as the user"         '! C $SB --as you send s-aaaaaaaa 
 ok "route sends a ticket note to the session that owns it" 'C $SB route PROJ-1234 -s "x" -m "The reviewer asked for a screen recording" | grep -q "s-aaaaaaaa"'
 ok "route refuses (exit 3) when nobody owns the ticket" 'C $SB route PROJ-4242 -m "x" >/dev/null 2>&1; [ $? = 3 ]'
 ok "a session can mark a Jira item handled"   'C $SB handled PROJ-77 | grep -q "handled: PROJ-77"'
+ok "setup lists what is on and what is optional"   'C $SB setup | grep -q "Deck starts by itself at login"'
 ok "all data stays inside the test HOME"      '[ -f "$T/.claude/hallway/hallway.db" ]'
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL -eq 0 ]

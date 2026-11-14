@@ -58,6 +58,20 @@ If your work touches another session's area ... `hallway find <topic>` locates t
 
 Run `hallway --help` for the rest.
 
+## Getting started
+
+Installing the plugin is enough for sessions to message each other, wake each other and keep a Ledger.
+Everything else is optional. Run `hallway setup`, or ask any session to "set up Hallway": it lists what
+is on and the one step for each remaining piece:
+
+1. **See the deck**: `hallway deck`, then open http://127.0.0.1:5055. `hallway setup --service` keeps it
+   running at login (macOS).
+2. **Your pull requests on the Ledger**: install the GitHub CLI and `gh auth login`.
+3. **The deck on your phone**: Tailscale, then `tailscale serve --bg 5055` (see below).
+4. **Jira**: add `jira_sites` to `~/.claude/hallway/deck.json` (see "The ledger"), and `auto_route_jira`
+   to send new comments and PR reviews to the session that owns the ticket.
+5. **Waking sessions the desktop app put to sleep**: tell one session "be the Hallway dispatcher".
+
 ## The deck
 
 `hallway deck` serves a live view of every session on `http://127.0.0.1:5055`:
@@ -75,8 +89,9 @@ create `~/.claude/hallway/deck.json` with `{"group_alias": {"IN PROGRESS": "Back
 
 The **Ledger** tab answers "where does everything stand?" in one table: one row per ticket, with a short
 summary, its status, its pull request (with live CI and review state from GitHub), **who it is waiting on**
-and the exact question for them. Cards at the top count what needs you, what waits on your approver,
-what waits on review or CI, what is moving and what is done.
+and the exact question for them. Five cards at the top: Needs you, Not started (assigned to you in Jira,
+no session yet), Waiting on others (filter by approval, review or a person, CI), In progress (filter by
+working, stalled, on hold) and In test / shipping.
 
 Sessions keep their own rows current with one line at each milestone:
 

@@ -93,8 +93,23 @@ In Test, blocked, waiting on someone, done), run one line:
 hallway ledger set PROJ-123 --title "few words" --summary "1-2 plain lines" --status "PR open" \
   --pr 482 --waiting-on <you|a person's name|ci|release|nobody> --need "the exact question for them"
 ```
-Only the fields you pass change. Use `--waiting-on you` only for a decision that is genuinely your
-user's. When it is finished: `hallway ledger set PROJ-123 --done`.
+Only the fields you pass change. When it is finished: `hallway ledger set PROJ-123 --done`.
+
+Rules that keep the Ledger honest:
+- Only add rows for tickets **you** are working on. If another session owns a ticket, leave its row
+  alone; do not add your own copy to describe that session's work.
+- `--waiting-on` is whoever must act next: `you` only for a decision that is genuinely your user's; a
+  person's name for a reviewer, an approver, a teammate **or a customer**; `ci`; `release` once it is
+  merged and only waits to ship; `nobody` only while **you** are actively doing the next step.
+- `--status "On hold"` means parked on purpose. Work nobody has started yet is not on hold: leave it off
+  the Ledger until you start it.
+- When your user closes your work with you, or tells you it is finished, set `--done` on your rows.
+
+## Setting Hallway up for your user
+If your user asks to set up Hallway, its deck, phone access or Jira, run `hallway setup`. It lists what
+is on, what is optional, and the exact step for each. `hallway setup --service` keeps the deck running
+at login on macOS. Settings live in `~/.claude/hallway/deck.json`; ask your user for their Jira site,
+approver names and so on rather than guessing, and explain each optional piece before turning it on.
 
 ## Messages from the deck
 Your user can write to you from the Hallway deck (on their Mac or phone). A background hook wakes you

@@ -820,7 +820,9 @@ const personColor = w => w === "you" ? "#ffb547" : ["ci", "release", "nobody", "
   PCOL[[...w].reduce((a, c) => a + c.charCodeAt(0), 0) % PCOL.length];
 const OLD_DAYS = 45;
 const GROUP = {you:"needs", todo:"todo", approver:"waiting", review:"waiting", moving:"active", hold:"active", release:"shipping", done:"done", old:"old"};
-const subOf = r => r.b === "review" && r.waiting_on === "ci" ? "ci" : r.b;
+// In progress, but its session has not touched the row in two days and is not running.
+const stalled = r => r.b === "moving" && r.updated && Date.now() / 1000 - r.updated > 2 * 86400 && !(r.session && r.session.live);
+const subOf = r => r.b === "review" && r.waiting_on === "ci" ? "ci" : stalled(r) ? "stalled" : r.b;
 function bucketOf(r) {
   const st = (r.status || "").toLowerCase(), w = r.waiting_on || "";
   if (r.source === "github" && r.pr_live && Date.now() / 1000 - Date.parse(r.pr_live.updated) / 1000 > OLD_DAYS * 86400) return "old";
@@ -871,7 +873,7 @@ function renderLedger() {
     shipping:["IN TEST / SHIPPING", "Merged or tested, waiting to ship", LCOL.release]};
   const SUB = {needs:[], todo:[],
     waiting:[...(L.approvers.length ? [["approver", "Approval" + (apprNames ? " from " + apprNames : "")]] : []), ["review", "Review or a person"], ["ci", "CI"]],
-    active:[["moving", "Working"], ["hold", "On hold"]], shipping:[]};
+    active:[["moving", "Working"], ["stalled", "Stalled (no update in 2+ days)"], ["hold", "On hold"]], shipping:[]};
   const nOld = rows.filter(r => r.b === "old").length;
   const cards = $("#lcards"); cards.innerHTML = "";
   for (const [k, [l, h, col]] of Object.entries(G)) {
