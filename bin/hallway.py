@@ -2114,6 +2114,11 @@ def cmd_ledger(conn, args):
 TICKET_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
 
 
+def _is_bot(login):
+    login = (login or "").lower()
+    return login.endswith("[bot]") or login in ("coderabbitai", "copilot", "github-actions", "dependabot")
+
+
 class _GitHub:
     """Open pull requests by the user, refreshed in the background (no tokens, just `gh`)."""
 
@@ -2150,7 +2155,7 @@ class _GitHub:
                  "reviewers": [], "branch": "", "mergeable": ""}
             try:
                 v = self._gh("pr", "view", str(p["number"]), "-R", repo, "--json",
-                             "reviewDecision,reviewRequests,headRefName,mergeable,statusCheckRollup")
+                             "reviewDecision,reviewRequests,reviews,headRefName,mergeable,statusCheckRollup")
                 states = [(c.get("conclusion") or c.get("state") or "").upper()
                           for c in (v.get("statusCheckRollup") or [])]
                 if any(x in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED") for x in states):
@@ -2160,6 +2165,16 @@ class _GitHub:
                 elif states:
                     d["ci"] = "green"
                 d["review"] = (v.get("reviewDecision") or "").lower()
+                if d["review"] == "approved":
+                    # CodeRabbit and other bots can approve. Only a person's approval means
+                    # the PR is ready; otherwise it still waits on the requested reviewer.
+                    latest = {}
+                    for r in v.get("reviews") or []:
+                        who = (r.get("author") or {}).get("login") or ""
+                        if r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                            latest[who] = r.get("state")
+                    if not any(st == "APPROVED" and not _is_bot(w) for w, st in latest.items()):
+                        d["review"] = "bot_approved"
                 d["reviewers"] = [r.get("login") or r.get("name") or "" for r in v.get("reviewRequests") or []]
                 d["branch"] = v.get("headRefName") or ""
                 d["mergeable"] = (v.get("mergeable") or "").lower()
@@ -2384,7 +2399,11 @@ def ledger_state(conn, gh=None, jira=None):
                   "Changes requested" if pr["review"] == "changes_requested" else "PR open")
         host = meta.get("host") if meta else None
         handle = None
-        if host:
+        owner = conn.execute("SELECT handle FROM ledger WHERE ticket=? ORDER BY updated DESC LIMIT 1",
+                             (tk.group(0),)).fetchone() if tk else None
+        if owner:  # a second PR for a ticket a session already tracks (another repo, say)
+            handle = owner["handle"]
+        elif host:
             for h, a in agents.items():
                 m = titles.get(a["session_id"] or "")
                 if m and m.get("host") == host:

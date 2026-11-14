@@ -834,7 +834,7 @@ function prCell(r) {
   if (p.merged) bits.push(`<span class="ok">merged</span>`);
   if (p.draft) bits.push(`<span class="mid">draft</span>`);
   if (p.ci) bits.push(`<span class="${p.ci === "green" ? "ok" : p.ci === "failing" ? "bad" : "mid"}">CI ${p.ci}</span>`);
-  if (p.review) bits.push(`<span class="${p.review === "approved" ? "ok" : p.review === "changes_requested" ? "bad" : "mid"}">${p.review.replace("_", " ").toLowerCase()}</span>`);
+  if (p.review) bits.push(`<span class="${p.review === "approved" ? "ok" : p.review === "changes_requested" ? "bad" : "mid"}">${(p.review === "bot_approved" ? "approved by bot only" : p.review.replace("_", " ").toLowerCase())}</span>`);
   const repo = p.repo.split("/")[1];
   return `<a href="${esc(p.url)}" target="_blank" onclick="event.stopPropagation()">#${p.number}</a> <span style="color:var(--faint);font-size:10px">${esc(repo)}</span><span class="s">${bits.join(" · ") || "open"}</span>`;
 }
