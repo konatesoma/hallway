@@ -2335,6 +2335,7 @@ class _Jira:
                 found[i["key"]] = {"key": i["key"], "summary": f.get("summary") or "",
                                    "status": (f.get("status") or {}).get("name", ""),
                                    "done": ((f.get("status") or {}).get("statusCategory") or {}).get("key") == "done",
+                                   "new": ((f.get("status") or {}).get("statusCategory") or {}).get("key") == "new",
                                    "priority": (f.get("priority") or {}).get("name", ""),
                                    "url": "%s/browse/%s" % (url, i["key"]), "assigned": assigned,
                                    "last_comment": lc, "site": site.get("name", url)}

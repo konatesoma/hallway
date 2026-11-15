@@ -833,6 +833,11 @@ function bucketOf(r) {
   if (st === "done" || r.jira_done || (st === "merged" && (!w || w === "nobody"))) return "done";
   if (w === "you") return "you";
   if (L.approvers.includes(w.split(/[-_ .@]/)[0])) return "approver";
+  // Nobody has begun it: Jira still has it in To Do, or the session says so. That is Not started,
+  // whatever status the session gave the row.
+  const notStarted = /not started/i.test([r.status, r.summary, r.need].join(" ")) ||
+    (r.jira && r.jira.new && (!st || /hold|to ?do|backlog|open/.test(st)));
+  if (notStarted && w !== "you" && !L.approvers.includes(w.split(/[-_ .@]/)[0])) return "todo";
   if (/hold|parked/.test(st)) return "hold";
   // Yours in Jira, but no session is on it: not moving, just not started.
   if (r.kind === "assigned" || (r.source === "jira" && w !== "you")) return "todo";
@@ -871,7 +876,7 @@ function renderLedger() {
   const apprNames = L.approvers.map(personName).join(", ");
   // Four groups on top; the finer split is a filter inside each group.
   const G = {needs:["NEEDS YOU", "Decisions only you can make", LCOL.you],
-    todo:["NOT STARTED", "Assigned to you, no session yet", LCOL.todo],
+    todo:["NOT STARTED", "Nobody has begun it yet", LCOL.todo],
     waiting:["WAITING ON OTHERS", "A review, CI" + (L.approvers.length ? ", or an approval" : " or a person"), LCOL.review],
     active:["IN PROGRESS", "A session is on it, or it's parked", LCOL.moving],
     shipping:["IN TEST / SHIPPING", "Merged or tested, waiting to ship", LCOL.release]};
