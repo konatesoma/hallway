@@ -870,9 +870,21 @@ function lSince(r) { const ts = r.updated || (r.pr_live && Date.parse(r.pr_live.
 async function loadLedger() {
   try { const res = await fetch("/api/ledger", {cache:"no-store"}); if (!res.ok) throw 0; L = await res.json(); if (VIEW === "ledger") renderLedger(); else if (S) render(); } catch (e) {}
 }
+// A session that stopped to ask you something is waiting on you even when its question is not
+// about a Ledger row (the Deck counts it too), so the Ledger lists it under Needs you.
+function sessionQuestions() {
+  if (!S) return [];
+  const covered = new Set(L.rows.filter(r => r.waiting_on === "you" && r.session).map(r => r.session.handle));
+  return sessionsBy("wait").filter(s => !covered.has(s.handle)).map(s => {
+    const m = (s.said || "").match(/\b[A-Z][A-Z0-9]{1,9}-\d+\b/);
+    return {ticket: m ? m[0] : "Question", title: s.title, summary: "", status: "Question for you", pr: "", pr_live: null,
+      waiting_on: "you", need: s.said || "", updated: s.since, source: "question", project: s.group || "Other",
+      session: {handle: s.handle, title: s.title, host: s.host, live: s.live, group: s.group}};
+  });
+}
 function renderLedger() {
   if (!L) return;
-  const rows = L.rows.map(r => ({...r, b:bucketOf(r)}));
+  const rows = [...L.rows, ...sessionQuestions()].map(r => ({...r, b:bucketOf(r)}));
   const apprNames = L.approvers.map(personName).join(", ");
   // Four groups on top; the finer split is a filter inside each group.
   const G = {needs:["NEEDS YOU", "Decisions only you can make", LCOL.you],
