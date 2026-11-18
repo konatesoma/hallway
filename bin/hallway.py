@@ -2297,9 +2297,9 @@ class _Jira:
                 q = urllib.parse.urlencode({"jql": jql, "fields": fields, "maxResults": 100})
                 return get("/rest/api/2/search/jql?" + q).get("issues", [])
             mine = search("assignee = currentUser() AND statusCategory = \"In Progress\" ORDER BY updated DESC",
-                          "summary,status,priority,assignee,comment")
+                          "summary,status,priority,assignee,comment,fixVersions")
             recent = search("(watcher = currentUser() OR assignee = currentUser() OR reporter = currentUser())"
-                            " AND updated >= -7d ORDER BY updated DESC", "summary,status,priority,assignee,comment")
+                            " AND updated >= -7d ORDER BY updated DESC", "summary,status,priority,assignee,comment,fixVersions")
             # Every ticket a session put on the Ledger, so its row can follow Jira's status
             # (QA moving it to Done, a release closing it) without the session waking up.
             if url not in self.projects:
@@ -2313,7 +2313,7 @@ class _Jira:
             for n in range(0, len(keys), 50):
                 try:
                     tracked += search("key in (%s)" % ",".join(keys[n:n + 50]),
-                                      "summary,status,priority,assignee,comment")
+                                      "summary,status,priority,assignee,comment,fixVersions")
                 except Exception:
                     pass
             for i in mine + recent + tracked:
@@ -2337,6 +2337,7 @@ class _Jira:
                                    "done": ((f.get("status") or {}).get("statusCategory") or {}).get("key") == "done",
                                    "new": ((f.get("status") or {}).get("statusCategory") or {}).get("key") == "new",
                                    "priority": (f.get("priority") or {}).get("name", ""),
+                                   "versions": [v.get("name", "") for v in (f.get("fixVersions") or []) if v.get("name")],
                                    "url": "%s/browse/%s" % (url, i["key"]), "assigned": assigned,
                                    "last_comment": lc, "site": site.get("name", url)}
         with self.lock:

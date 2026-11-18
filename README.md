@@ -91,7 +91,7 @@ The **Ledger** tab answers "where does everything stand?" in one table: one row 
 summary, its status, its pull request (with live CI and review state from GitHub), **who it is waiting on**
 and the exact question for them. Five cards at the top: Needs you, Not started (assigned to you in Jira,
 no session yet), Waiting on others (filter by approval, review or a person, CI), In progress (filter by
-working, stalled, on hold) and In test / shipping.
+working, stalled, on hold) and In test / shipping. Rows show each ticket's Jira priority and fix version. Within every section the most critical tickets come first, and you can group **By release** or pick one release from the release filter, for example to see what is not started for the next version.
 
 Sessions keep their own rows current with one line at each milestone:
 
