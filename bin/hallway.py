@@ -279,8 +279,22 @@ def _scan_titles():
     # A rewind or resume gives the same sidebar session a new CLI id. The old id still maps to
     # it (so it can be woken), marked with the id it continues as.
     for old, cid in prior.items():
-        if old not in out and cid in out:
+        # The old id may also have its own, older record (for example in the other app's
+        # store); the session it continues as is the truth, including whether it is archived.
+        if cid in out and (old not in out or (out[old].get("active") or 0) <= (out[cid].get("active") or 0)):
             out[old] = dict(out[cid], current=cid)
+    # One sidebar session can carry several CLI ids across the two apps' stores (an id from
+    # before a resume may never be listed as "prior"). Its newest record decides for all of
+    # them, including whether the session is archived.
+    best = {}
+    for cid, m in out.items():
+        b = best.get(m["host"])
+        if b is None or (m.get("active") or 0) > (out[b].get("active") or 0):
+            best[m["host"]] = cid
+    for cid, m in list(out.items()):
+        b = best[m["host"]]
+        if b != cid and not m.get("current"):
+            out[cid] = dict(out[b], current=out[b].get("current") or b)
     return out
 
 
