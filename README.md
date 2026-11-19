@@ -130,6 +130,15 @@ you (it mentions you, or the ticket is yours) and unanswered. Those appear on th
 session knows about them, rows get a "new Jira comment" flag, and the context document quotes the
 latest comment. Credentials are read from that MCP server's settings at runtime, never copied.
 
+#### Review requests go to a reviewer session
+
+Add `"review_agent": "PR reviewer"` (a session title or handle) to `deck.json`, and every time someone
+asks you to review a pull request, the deck sends it to that session (urgent, so it wakes, or the
+dispatcher wakes it) with an instruction to run `/pr-review` on it. Requests that were already pending
+when you turn it on are only recorded, not sent. A request that is withdrawn and made again is sent
+again. Review requests also appear on the Ledger: under Needs you when no reviewer session is set, and
+under In progress once the reviewer session has taken them.
+
 #### Jira autopilot
 
 With `"auto_route_jira": true`, a new Jira comment for you on a ticket a session owns is sent to that

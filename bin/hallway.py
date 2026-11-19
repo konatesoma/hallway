@@ -2139,6 +2139,7 @@ class _GitHub:
     def __init__(self, every=180):
         import threading
         self.every, self.prs, self.merged, self.at, self.error = every, {}, {}, 0, None
+        self.requested = {}
         self.lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -2210,8 +2211,23 @@ class _GitHub:
                     "mergeable": "", "merged": True}
         except Exception:
             pass
+        # Other people's pull requests that ask for the user's review
+        requested = {}
+        try:
+            for p in self._gh("search", "prs", "--review-requested=@me", "--state=open", "--limit", "50",
+                              "--json", "number,title,url,repository,author,updatedAt,isDraft") or []:
+                if p.get("isDraft"):
+                    continue
+                repo = p["repository"]["nameWithOwner"]
+                requested["%s#%s" % (repo, p["number"])] = {
+                    "number": p["number"], "repo": repo, "title": p["title"], "url": p["url"], "draft": False,
+                    "updated": p["updatedAt"], "author": (p.get("author") or {}).get("login", ""),
+                    "ci": "", "review": "", "reviewers": [], "branch": "", "mergeable": ""}
+        except Exception:
+            pass
         with self.lock:
             self.prs, self.merged, self.at = prs, merged, now()
+            self.requested = requested
 
     def snapshot(self):
         with self.lock:
@@ -2220,6 +2236,10 @@ class _GitHub:
     def merged_snapshot(self):
         with self.lock:
             return dict(self.merged)
+
+    def requested_snapshot(self):
+        with self.lock:
+            return dict(self.requested)
 
 
 def _checked_out(cwd):
@@ -2545,6 +2565,24 @@ def ledger_state(conn, gh=None, jira=None):
                      "session": session_of(handle) if handle else (
                          {"handle": None, "title": meta.get("title"), "host": host, "live": False} if meta else None),
                      "source": "github"})
+    review_agent = conf.get("review_agent")
+    try:
+        routed_reviews = json.load(open(os.path.join(ROOT, "autopilot.json"))).get("review_requests") or {}
+    except Exception:
+        routed_reviews = {}
+    reviewer = resolve(conn, review_agent) if review_agent else None
+    for key, pr in (gh.requested_snapshot() if gh else {}).items():
+        tk = TICKET_RE.search(pr["title"] or "")
+        taken = bool(reviewer and routed_reviews.get(key))
+        rows.append({"ticket": tk.group(0) if tk else "PR %s" % pr["number"],
+                     "title": TICKET_RE.sub("", pr["title"]).lstrip(" :-") or pr["title"],
+                     "summary": "%s asked for your review" % pr["author"], "status": "Review requested",
+                     "pr": key, "pr_live": pr, "waiting_on": "session" if taken else "you",
+                     "need": ("The reviewer session is reviewing it" if taken else
+                              "Review %s's pull request (or name a reviewer session in deck.json \"review_agent\")"
+                              % pr["author"]),
+                     "updated": routed_reviews.get(key) or _iso_ts(pr["updated"]),
+                     "session": session_of(reviewer) if taken else None, "source": "review"})
     issues, jira_at, jira_err = jira.snapshot() if jira else ({}, 0, None)
     acked = {r["ticket"]: r["until_at"] for r in conn.execute("SELECT ticket, until_at FROM acks")}
     by_ticket = {}
@@ -3372,6 +3410,44 @@ def _route_pr_events(conn, gh, st, first, dry_run, report):
     conn.commit()
 
 
+def _route_review_requests(conn, gh, conf, st, dry_run, report):
+    """Send each new review request to the session the user named as reviewer
+    (deck.json "review_agent": a session title or handle). The first run only records
+    what is already pending; a request that is withdrawn and made again is sent again."""
+    requested = gh.requested_snapshot()
+    if not gh.at:
+        return  # GitHub not polled yet; an empty list would forget every request
+    seeding = "review_requests" not in st
+    sent = st.setdefault("review_requests", {})
+    for key in [k for k in sent if k not in requested]:
+        del sent[key]  # reviewed or withdrawn
+    agent = resolve(conn, conf["review_agent"])
+    for key, pr in sorted(requested.items()):
+        if key in sent:
+            continue
+        if dry_run:
+            report.setdefault("would_route_review", []).append((key, pr["author"], agent))
+            continue
+        sent[key] = now()
+        if seeding or not agent:
+            continue
+        conn.execute("INSERT OR IGNORE INTO agents (handle, kind, title, first_seen, last_seen) VALUES (?,?,?,?,?)",
+                     ("github", "service", "GitHub", now(), now()))
+        conn.execute("INSERT INTO messages (id, ts, sender, recipient, channel, subject, body, thread,"
+                     " in_reply_to, priority, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (short_id(), now(), "github", agent, None,
+                      "Review requested: %s#%s by %s" % (pr["repo"].split("/")[-1], pr["number"], pr["author"]),
+                      "%s asked your user to review %s#%s: %s\n%s\n\nRun /pr-review %s on it (repo %s) and follow that "
+                      "skill exactly, including how it ends a review of someone else's PR. Update your Ledger row "
+                      "for it when you finish." % (pr["author"], pr["repo"], pr["number"], pr["title"], pr["url"],
+                                                    pr["number"], pr["repo"]),
+                      None, None, "high", "review-request"))
+        report["routed"] += 1
+    if seeding:
+        report["review_backlog"] = len(requested)
+    conn.commit()
+
+
 def _gh_login():
     import subprocess
     if not _GH_LOGIN:
@@ -3429,6 +3505,9 @@ def jira_autopilot_once(gh, jira, gmail, dry_run=False):
         # 1b. a person reviewed, or someone merged, a PR on the Ledger: tell the session that owns it
         if conf.get("auto_route_jira") and gh:
             _route_pr_events(conn, gh, st, first, dry_run, report)
+        # 1c. someone asked the user to review a pull request: hand it to the reviewer session
+        if conf.get("review_agent") and gh:
+            _route_review_requests(conn, gh, conf, st, dry_run, report)
         # 2. mark notification emails read once the ticket has been answered
         label = conf.get("gmail_jira_label")
         if label and gmail:
