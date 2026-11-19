@@ -3422,6 +3422,8 @@ def _route_review_requests(conn, gh, conf, st, dry_run, report):
     for key in [k for k in sent if k not in requested]:
         del sent[key]  # reviewed or withdrawn
     agent = resolve(conn, conf["review_agent"])
+    if not agent and not seeding:
+        return  # the reviewer session doesn't exist yet: keep the requests pending, don't drop them
     for key, pr in sorted(requested.items()):
         if key in sent:
             continue
