@@ -2604,7 +2604,9 @@ def ledger_state(conn, gh=None, jira=None):
         elif ji["assigned"] and not ji.get("done") and key not in acked:
             rows.append({"ticket": key, "title": ji["summary"], "summary": "", "status": ji["status"],
                          "pr": "", "pr_live": None, "waiting_on": "nobody",
-                         "need": "Assigned to you in Jira (%s); no session is working on it" % ji["status"],
+                         "need": ("In %s in Jira, waiting for the release or its proof; no session is tracking it" % ji["status"]
+                                  if re.search(r"test|qa|review|release|deploy", ji["status"], re.I)
+                                  else "Assigned to you in Jira (%s); no session is working on it" % ji["status"]),
                          "kind": "assigned",
                          "updated": 0, "session": None, "source": "jira", "jira": ji})
     for r in rows:

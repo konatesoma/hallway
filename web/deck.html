@@ -852,7 +852,8 @@ function bucketOf(r) {
     (r.jira && r.jira.new && (!st || /hold|to ?do|backlog|open/.test(st)));
   if (notStarted && w !== "you" && !L.approvers.includes(w.split(/[-_ .@]/)[0])) return "todo";
   if (/hold|parked/.test(st)) return "hold";
-  // Yours in Jira, but no session is on it: not moving, just not started.
+  // Yours in Jira with no session on it. Already in test or awaiting release is shipping, not "not started".
+  if (r.kind === "assigned" && /test|qa|review|release|deploy|pre-?prod/.test(st)) return "release";
   if (r.kind === "assigned" || (r.source === "jira" && w !== "you")) return "todo";
   if (!w || ["nobody", "release", "session"].includes(w))
     return w === "release" || /in test|merged|ready to merge|deployed/.test(st) ? "release" : "moving";
