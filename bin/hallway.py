@@ -934,17 +934,18 @@ def cmd_send(conn, args):
         live = live_sessions()
         row = conn.execute("SELECT session_id FROM agents WHERE handle=?", (recipient,)).fetchone()
         sid = row["session_id"] if row else None
-        reach = live_handles(conn).get(recipient)
-        if reach:
-            print("note: that session is running and will not read the board on its own.")
-            print("      To make it act now, deliver this with"
-                  " mcp__ccd_session_mgmt__send_message,")
-            print("      session_id=%s" % (reach["host"] or "(unknown)"))
-            if reach["regname"]:
-                print("      (or the SendMessage tool with to=\"%s\", where available)"
-                      % reach["regname"])
+        # Hallway delivers through the recipient's own listener; never push the same message
+        # with the app's session messaging (it is refused between sessions in different
+        # permission modes, and it would arrive twice).
+        if _listening(recipient):
+            print("note: that session is listening; Hallway delivers this to it within seconds.")
+        elif getattr(args, "urgent", False) and dispatcher_status().get("state") in ("listening", "restarting"):
+            print("note: that session is asleep; the Hallway dispatcher will wake it.")
+        elif getattr(args, "urgent", False):
+            print("note: that session is asleep and no dispatcher is running; it gets this when it next starts.")
         else:
-            print("note: %s is not running; it will see this the next time it starts." % recipient)
+            print("note: that session is asleep; it gets this when it next starts. Send with --urgent to"
+                  " have the dispatcher wake it. Don't use the app's session messaging for this.")
 
 
 def cmd_inbox(conn, args):
@@ -1232,7 +1233,6 @@ def cmd_notify(conn, args):
     for t in plan:
         print("  %s" % (t["title"] or t["handle"]))
         print("    session_id:      %s" % (t["session_id"] or "(unknown)"))
-        print("    or SendMessage:  %s" % t["send_message_to"])
         for m in t["waiting"]:
             flag = " (urgent)" if m["priority"] == "high" else ""
             print("    waiting:         [%s] %s - %s%s"
@@ -1240,18 +1240,10 @@ def cmd_notify(conn, args):
                      m["subject"] or "(no subject)", flag))
             print("    start it with:   %s" % m["header"])
         print()
-    print("These sessions are running and idle; they will not read the board on their")
-    print("own. Deliver each one with:")
-    print("")
-    print("    mcp__ccd_session_mgmt__send_message(session_id=<the id above>,")
-    print("                                        message=\"<the 'start it with' line> ...\")")
-    print("")
-    print("Always begin with that line, word for word: it is how the receiving session knows")
-    print("whether a message is from its user or from another agent.")
-    print("")
-    print("That tool is provided by the Claude desktop app, so every session has it.")
-    print("The SendMessage tool is NOT always available - use it only if your session")
-    print("lists it, and note it takes the derived name, not the session_id.")
+    print("These sessions have no running Hallway listener, so they haven't picked this up.")
+    print("Don't push it with the app's session messaging: that is refused between sessions")
+    print("in different permission modes. Resend it with `hallway send <handle> --urgent ...`")
+    print("and the Hallway dispatcher wakes the session; otherwise it reads it when it next starts.")
     if not args.mark:
         print("Re-run with --mark once delivered, so the next notify skips them.")
 
