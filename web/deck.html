@@ -211,6 +211,10 @@ button,textarea{font:inherit;color:inherit}
 .ltab{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0b1520}
 .ltab table{width:100%;border-collapse:collapse}
 .ltab thead th{background:#0a141e;text-align:left;font:600 10px var(--mono);letter-spacing:.16em;color:var(--dim);padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+#news{position:fixed;right:18px;bottom:18px;z-index:60;max-width:420px;background:#0b1520;border:1px solid var(--line2);border-left:3px solid #5ef2ff;border-radius:10px;padding:14px 16px;box-shadow:0 10px 40px rgba(0,0,0,.5);font:400 13px var(--sans);color:var(--text)}
+#news .nh{font:600 10.5px var(--mono);letter-spacing:.16em;color:#5ef2ff;margin-bottom:8px}
+#news p{margin:0 0 8px;line-height:1.45}#news code{font:12px var(--mono);color:#c3a6ff}
+#news button{margin-top:4px}
 .ltab tr.grp{cursor:pointer;user-select:none}
 .lmeta{display:flex;gap:6px;align-items:center;margin:3px 0 2px;font:600 9.5px var(--mono);letter-spacing:.08em}
 .lmeta b{padding:1px 5px;border-radius:3px;border:1px solid currentColor;font-weight:600}
@@ -405,8 +409,23 @@ async function load() {
     // The deck was updated while this page was open: load the new page instead of running old code.
     if (window.DECK_VERSION === undefined) window.DECK_VERSION = S.version;
     else if (S.version && S.version !== window.DECK_VERSION && !editing() && !$("#compose").classList.contains("on")) { location.reload(); return; }
-    render(); }
+    render(); renderNews(); }
   catch (e) { /* keep the last picture; the clock turns red */ }
+}
+// What's new: a dismissible note with the features added since this viewer last closed it.
+function renderNews() {
+  const list = (S && S.whats_new) || []; if (!list.length) return;
+  let seen = ""; try { seen = localStorage.getItem("hallway.newsSeen") || ""; } catch (e) {}
+  const ver = v => (v || "0").split(".").map(Number), newer = (a, b) => { const x = ver(a), y = ver(b);
+    for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+  const items = seen ? list.filter(n => newer(n.version, seen)) : list.slice(0, 1);
+  let el = $("#news");
+  if (!items.length) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement("div"); el.id = "news"; document.body.appendChild(el); }
+  const md = t => esc(t).replace(/`([^`]+)`/g, "<code>$1</code>");
+  el.innerHTML = `<div class="nh">WHAT'S NEW IN HALLWAY</div>` + items.map(n => `<p><b>${esc(n.title)}</b> ${md(n.text)}</p>`).join("") +
+    `<button class="fb">Got it</button>`;
+  el.querySelector("button").onclick = () => { try { localStorage.setItem("hallway.newsSeen", list[0].version); } catch (e) {} el.remove(); };
 }
 async function sendReply(handle, text) {
   const r = await fetch("/api/reply", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({handle, text})});

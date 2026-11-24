@@ -130,14 +130,28 @@ you (it mentions you, or the ticket is yours) and unanswered. Those appear on th
 session knows about them, rows get a "new Jira comment" flag, and the context document quotes the
 latest comment. Credentials are read from that MCP server's settings at runtime, never copied.
 
-#### Review requests go to a reviewer session
+#### A pull request reviewer
 
-Add `"review_agent": "PR reviewer"` (a session title or handle) to `deck.json`, and every time someone
-asks you to review a pull request, the deck sends it to that session (urgent, so it wakes, or the
-dispatcher wakes it) with an instruction to run `/pr-review` on it. Requests that were already pending
-when you turn it on are only recorded, not sent. A request that is withdrawn and made again is sent
-again. Review requests also appear on the Ledger: under Needs you when no reviewer session is set, and
-under In progress once the reviewer session has taken them.
+When someone asks you to review a pull request, Hallway can hand it to a reviewer session. Add
+`"review_agent": "Hallway PR reviewer"` to `deck.json` and open a session with that name; tell it to
+wait for review requests. Each new request reaches it as an urgent message (the dispatcher wakes it if
+it is asleep), and it runs the bundled `/hallway:review` skill: it reads the PR, the ticket and the code
+around the change, checks the PR's claims and tests, uses `/aq`, `/ar`, CodeRabbit or similar if you have
+them, and ends with a formal approve or request-changes review.
+
+It holds the verdict for you instead when the PR makes a design decision, changes a core part of the
+system, touches security, privacy, billing or customer-visible behaviour, changes how agents or
+automation behave, or when it is unsure: the review waits as a pending GitHub review and the PR shows in
+your Needs you with the reviewer's proposed verdict. Put your own rules in
+`~/.claude/hallway/review-rules.md`. To use your own review skill, set `"review_command": "/my-review"`.
+
+Requests already pending when you turn it on are recorded, not sent; a request withdrawn and made again
+is sent again. Review requests also appear on the Ledger: under Needs you while no reviewer has them.
+
+#### What's new
+
+After an update, the first session tells you once, in one line, what changed. The deck shows the same
+note until you close it.
 
 #### Jira autopilot
 

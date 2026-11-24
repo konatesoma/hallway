@@ -1707,7 +1707,7 @@ def deck_state(conn):
     midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
     today = conn.execute("SELECT COUNT(*) FROM messages WHERE ts >= ?", (midnight,)).fetchone()[0]
     return {"generated_at": t, "sessions": sessions, "messages": msgs, "names": names,
-            "dispatcher": dispatcher_status(), "version": _version(),
+            "dispatcher": dispatcher_status(), "version": _version(), "whats_new": _whats_new_since(""),
             "known": sorted(known), "activity": bins, "messages_today": today,
             "hour": lt.tm_hour, "human": HUMAN}
 
@@ -3129,6 +3129,31 @@ def cmd_handled(conn, args):
     print("handled: %s (notification emails are marked read within a few minutes)" % ", ".join(args.tickets))
 
 
+# What's new, newest first. The deck shows entries newer than what the viewer dismissed;
+# the first session after an update tells the user once, in one line, with how to turn it on.
+WHATS_NEW = [
+    ("0.16.0", "Pull request reviewer",
+     "When someone asks you to review a pull request, Hallway can hand it to a reviewer session that "
+     "reviews it with the bundled /hallway:review skill and posts the verdict, or holds it for you when "
+     "it touches a design decision, a core part of the system or anything sensitive. "
+     "Turn it on with `hallway setup`."),
+    ("0.15.0", "Review requests on the Ledger",
+     "Pull requests that ask for your review now show under Needs you."),
+    ("0.14.0", "Priority and release on the Ledger",
+     "Rows show each ticket's Jira priority and fix version; group by release and the most critical "
+     "come first."),
+    ("0.13.0", "hallway setup",
+     "`hallway setup` lists what is on and the one step to turn on each optional feature."),
+]
+
+
+def _whats_new_since(version):
+    """Entries newer than `version` (all of them when it is empty)."""
+    def key(v):
+        return tuple(int(x) for x in re.findall(r"\d+", v or "0"))
+    return [{"version": v, "title": t, "text": x} for v, t, x in WHATS_NEW if not version or key(v) > key(version)]
+
+
 PLIST_LABEL = "com.hallway.deck"
 
 
@@ -3189,6 +3214,11 @@ def cmd_setup(conn, args):
          'Optional, needs Jira. In deck.json: "auto_route_jira": true.'),
         ("Wake sessions the desktop app put to sleep", dispatcher_status().get("state") in ("listening", "restarting"),
          'Optional. Open one session and tell it: "be the Hallway dispatcher".'),
+        ("Pull request reviewer", has("review_agent"),
+         'Optional. In deck.json: "review_agent": "Hallway PR reviewer". Then open a session named '
+         '"Hallway PR reviewer" and tell it to wait for review requests. It runs /hallway:review on each '
+         '(or your own skill: "review_command": "/my-review"). It holds PRs that need your judgement; '
+         'list what you always want to see in ~/.claude/hallway/review-rules.md.'),
     ]
     print("Hallway setup  (settings file: %s)\n" % DECK_CONF)
     for name, ok, how in steps:
@@ -3433,7 +3463,7 @@ def _route_review_requests(conn, gh, conf, st, dry_run, report):
                      " in_reply_to, priority, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                      (short_id(), now(), "github", agent, None,
                       "Review requested: %s#%s by %s" % (pr["repo"].split("/")[-1], pr["number"], pr["author"]),
-                      "%s asked your user to review %s#%s: %s\n%s\n\nRun /pr-review %s on it (repo %s) and follow that "
+                      "%s asked your user to review %s#%s: %s\n%s\n\nRun " + (conf.get("review_command") or "/hallway:review") + " %s on it (repo %s) and follow that "
                       "skill exactly, including how it ends a review of someone else's PR. Update your Ledger row "
                       "for it when you finish." % (pr["author"], pr["repo"], pr["number"], pr["title"], pr["url"],
                                                     pr["number"], pr["repo"]),
@@ -3571,15 +3601,58 @@ def cmd_hook_start(conn, args):
         except OSError:
             pass
     _install_shim()
-    cmd_pending(conn, args)
-    cmd_peers(conn, args)
-    print("\nKeep your user's Ledger current: when you start on a ticket and at each milestone (PR opened,"
-          " review requested, merged, deployed, waiting on someone, done), run one line:\n"
-          "  hallway ledger set <TICKET> --title \"few words\" --summary \"1-2 lines\" --status \"PR open\""
-          " --pr 6102 --waiting-on <you|name|ci|release|nobody> --need \"the exact question\"\n"
-          "Only the fields you pass change. It is how your user sees every ticket at a glance.\n"
-          "Only for tickets you work on yourself. --waiting-on is whoever acts next (a customer or teammate counts);"
-          " `nobody` only while you are doing the next step.")
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cmd_pending(conn, args)
+        cmd_peers(conn, args)
+        print("\nKeep your user's Ledger current: when you start on a ticket and at each milestone (PR opened,"
+              " review requested, merged, deployed, waiting on someone, done), run one line:\n"
+              "  hallway ledger set <TICKET> --title \"few words\" --summary \"1-2 lines\" --status \"PR open\""
+              " --pr 6102 --waiting-on <you|name|ci|release|nobody> --need \"the exact question\"\n"
+              "Only the fields you pass change. It is how your user sees every ticket at a glance.\n"
+              "Only for tickets you work on yourself. --waiting-on is whoever acts next (a customer or teammate counts);"
+              " `nobody` only while you are doing the next step.")
+    note = _announce_once()
+    if note:
+        # Shown to the user once per update; the session also gets it as context.
+        print(json.dumps({"systemMessage": note,
+                          "hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                 "additionalContext": buf.getvalue() + "\n\n" + note}}))
+    else:
+        sys.stdout.write(buf.getvalue())
+
+
+def _announce_once():
+    """One line about what's new since this machine last heard, the first time a session starts
+    after an update. Never again for the same version."""
+    path = os.path.join(ROOT, "announced.json")
+    try:
+        seen = json.load(open(path)).get("version", "")
+    except Exception:
+        seen = None
+    current = _version()
+    if not current or seen == current:
+        return ""
+    try:
+        json.dump({"version": current}, open(path, "w"))
+    except OSError:
+        return ""
+    if seen is None:
+        # No record yet. Someone who has been using Hallway (agents seen more than a day ago)
+        # last heard at 0.15.3, the version before these notices existed; a fresh install hears nothing.
+        try:
+            old = connect().execute("SELECT 1 FROM agents WHERE first_seen < ? LIMIT 1", (now() - 86400,)).fetchone()
+        except Exception:
+            old = None
+        if not old:
+            return ""
+        seen = "0.15.3"
+    items = _whats_new_since(seen)
+    if not items:
+        return ""
+    return ("Hallway %s: %s. Details: `hallway setup`, or the What's new note on the deck."
+            % (current, "; ".join(i["title"] for i in items[:3])))
 
 
 class _Parser(argparse.ArgumentParser):
