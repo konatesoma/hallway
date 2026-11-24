@@ -2562,7 +2562,8 @@ def ledger_state(conn, gh=None, jira=None):
         routed_reviews = json.load(open(os.path.join(ROOT, "autopilot.json"))).get("review_requests") or {}
     except Exception:
         routed_reviews = {}
-    reviewer = resolve(conn, review_agent) if review_agent else None
+    reviewer = (None if not review_agent else
+                REVIEWER_HANDLE if str(review_agent).lower() in ("background", "auto") else resolve(conn, review_agent))
     for key, pr in (gh.requested_snapshot() if gh else {}).items():
         tk = TICKET_RE.search(pr["title"] or "")
         taken = bool(reviewer and routed_reviews.get(key))
@@ -2574,7 +2575,9 @@ def ledger_state(conn, gh=None, jira=None):
                               "Review %s's pull request (or name a reviewer session in deck.json \"review_agent\")"
                               % pr["author"]),
                      "updated": routed_reviews.get(key) or _iso_ts(pr["updated"]),
-                     "session": session_of(reviewer) if taken else None, "source": "review"})
+                     "session": (session_of(reviewer) if reviewer != REVIEWER_HANDLE else
+                                 {"handle": None, "title": "Background PR reviewer", "live": True}) if taken else None,
+                     "source": "review"})
     issues, jira_at, jira_err = jira.snapshot() if jira else ({}, 0, None)
     acked = {r["ticket"]: r["until_at"] for r in conn.execute("SELECT ticket, until_at FROM acks")}
     by_ticket = {}
@@ -3132,6 +3135,10 @@ def cmd_handled(conn, args):
 # What's new, newest first. The deck shows entries newer than what the viewer dismissed;
 # the first session after an update tells the user once, in one line, with how to turn it on.
 WHATS_NEW = [
+    ("0.17.0", "Reviews without a reviewer session",
+     "Set \"review_agent\": \"background\" and the deck reviews each pull request that asks for your review "
+     "with Claude Code in the background, no session needed. Held reviews sit under Needs you, in the "
+     "Pull request reviews filter, where you can send any of them to a session."),
     ("0.16.0", "Pull request reviewer",
      "When someone asks you to review a pull request, Hallway can hand it to a reviewer session that "
      "reviews it with the bundled /hallway:review skill and posts the verdict, or holds it for you when "
@@ -3215,10 +3222,10 @@ def cmd_setup(conn, args):
         ("Wake sessions the desktop app put to sleep", dispatcher_status().get("state") in ("listening", "restarting"),
          'Optional. Open one session and tell it: "be the Hallway dispatcher".'),
         ("Pull request reviewer", has("review_agent"),
-         'Optional. In deck.json: "review_agent": "Hallway PR reviewer". Then open a session named '
-         '"Hallway PR reviewer" and tell it to wait for review requests. It runs /hallway:review on each '
-         '(or your own skill: "review_command": "/my-review"). It holds PRs that need your judgement; '
-         'list what you always want to see in ~/.claude/hallway/review-rules.md.'),
+         'Optional. In deck.json: "review_agent": "background". The deck then reviews each pull request that '
+         'asks for your review with Claude Code in the background (/hallway:review, or your own skill with '
+         '"review_command"), and holds the ones that need your judgement in Needs you. Put your own rules in '
+         '~/.claude/hallway/review-rules.md. Prefer a visible session? Set "review_agent" to its title instead.'),
     ]
     print("Hallway setup  (settings file: %s)\n" % DECK_CONF)
     for name, ok, how in steps:
@@ -3445,7 +3452,8 @@ def _route_review_requests(conn, gh, conf, st, dry_run, report):
     sent = st.setdefault("review_requests", {})
     for key in [k for k in sent if k not in requested]:
         del sent[key]  # reviewed or withdrawn
-    agent = resolve(conn, conf["review_agent"])
+    background = str(conf["review_agent"]).lower() in ("background", "auto")
+    agent = "background" if background else resolve(conn, conf["review_agent"])
     if not agent and not seeding:
         return  # the reviewer session doesn't exist yet: keep the requests pending, don't drop them
     for key, pr in sorted(requested.items()):
@@ -3456,6 +3464,10 @@ def _route_review_requests(conn, gh, conf, st, dry_run, report):
             continue
         sent[key] = now()
         if seeding or not agent:
+            continue
+        if background:
+            _review_in_background(conf, pr)
+            report["routed"] += 1
             continue
         conn.execute("INSERT OR IGNORE INTO agents (handle, kind, title, first_seen, last_seen) VALUES (?,?,?,?,?)",
                      ("github", "service", "GitHub", now(), now()))
@@ -3472,6 +3484,47 @@ def _route_review_requests(conn, gh, conf, st, dry_run, report):
     if seeding:
         report["review_backlog"] = len(requested)
     conn.commit()
+
+
+_REVIEW_LOCK = None
+REVIEWER_HANDLE = "pr-reviewer"
+
+
+def _review_in_background(conf, pr):
+    """Review one pull request with Claude Code running unattended (claude -p), one review
+    at a time, in a folder of its own. Its Ledger rows appear under the name pr-reviewer."""
+    import threading, subprocess, shutil
+    global _REVIEW_LOCK
+    if _REVIEW_LOCK is None:
+        _REVIEW_LOCK = threading.Lock()
+    claude = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    command = conf.get("review_command") or "/hallway:review"
+    mode = conf.get("review_permission_mode") or "auto"
+    repo_dir = os.path.join(ROOT, "reviews", pr["repo"].replace("/", "__"))
+    log = os.path.join(ROOT, "reviews", "logs", "%s-%s.log" % (pr["repo"].split("/")[-1], pr["number"]))
+    prompt = ("You are running unattended as your user's pull request reviewer: nobody can answer questions, "
+              "so never ask; when a decision is needed, hold the review for your user as the skill says.\n"
+              "%s asked your user to review %s#%s: %s\n%s\n\n"
+              "Run %s %s on it (repository %s) and follow that skill exactly. This folder is yours: if it is not "
+              "already a clone of %s, clone it here with `gh repo clone %s .` before you start. "
+              "Run every hallway command as `hallway --as %s ...` so your Ledger rows show who wrote them."
+              % (pr["author"], pr["repo"], pr["number"], pr["title"], pr["url"], command, pr["number"], pr["repo"],
+                 pr["repo"], pr["repo"], REVIEWER_HANDLE))
+
+    def run():
+        with _REVIEW_LOCK:
+            os.makedirs(repo_dir, exist_ok=True)
+            os.makedirs(os.path.dirname(log), exist_ok=True)
+            with open(log, "w") as out:
+                out.write("review of %s#%s started %s\n\n" % (pr["repo"], pr["number"], time.ctime()))
+                out.flush()
+                try:
+                    subprocess.run([claude, "-p", prompt, "--permission-mode", mode], cwd=repo_dir,
+                                   stdout=out, stderr=subprocess.STDOUT, timeout=3600,
+                                   env=dict(os.environ, HALLWAY_UNATTENDED="1"))
+                except Exception as e:
+                    out.write("\nreview run failed: %s\n" % e)
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _gh_login():

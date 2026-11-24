@@ -510,9 +510,12 @@ function render() {
   $("#cBlock").textContent = nb + " BLOCKED"; $("#cBlock").classList.toggle("zero", !nb);
   $("#cMsgs").textContent = S.messages_today + " MESSAGES TODAY";
   const dp = S.dispatcher || {state:"none"}, dc = $("#cDisp");
-  dc.hidden = dp.state !== "asleep";
-  if (dp.state === "asleep") { dc.textContent = "⚠ DISPATCHER ASLEEP · OPEN IT AND SEND 'RESUME'";
-    dc.href = dp.host ? "claude://code/continue?session=" + dp.host : "#"; dc.style.textDecoration = "none"; }
+  // No dispatcher yet, or one that has gone: one click opens a session with the instruction filled in.
+  const startNew = "claude://code/new?" + new URLSearchParams({q: "Be the Hallway dispatcher."}).toString();
+  dc.hidden = !["asleep", "none"].includes(dp.state); dc.style.textDecoration = "none";
+  if (dp.state === "asleep") { dc.textContent = dp.host ? "⚠ DISPATCHER ASLEEP · OPEN IT AND SEND 'RESUME'" : "⚠ DISPATCHER ASLEEP · START A NEW ONE";
+    dc.href = dp.host ? "claude://code/continue?session=" + dp.host : startNew; }
+  if (dp.state === "none") { dc.textContent = "START A DISPATCHER · WAKES SLEEPING SESSIONS"; dc.href = startNew; }
   if (VIEW === "deck") renderDeck(att);
   if (VIEW === "wall") renderWall();
   if (VIEW === "focus") renderFocus(att);
@@ -858,7 +861,8 @@ const OLD_DAYS = 45;
 const GROUP = {you:"needs", todo:"todo", approver:"waiting", review:"waiting", moving:"active", hold:"active", release:"shipping", done:"done", old:"old"};
 // In progress, but its session has not touched the row in two days and is not running.
 const stalled = r => r.b === "moving" && r.updated && Date.now() / 1000 - r.updated > 2 * 86400 && !(r.session && r.session.live);
-const subOf = r => r.b === "review" && r.waiting_on === "ci" ? "ci" : stalled(r) ? "stalled" : r.b;
+const isReview = r => r.source === "review" || /needs review|review requested/i.test(r.status || "") || /^Review:/.test(r.title || "");
+const subOf = r => r.b === "review" && r.waiting_on === "ci" ? "ci" : r.b === "you" && isReview(r) ? "reviews" : stalled(r) ? "stalled" : r.b;
 function bucketOf(r) {
   const st = (r.status || "").toLowerCase(), w = r.waiting_on || "";
   if (r.source === "github" && r.pr_live && Date.now() / 1000 - Date.parse(r.pr_live.updated) / 1000 > OLD_DAYS * 86400) return "old";
@@ -925,7 +929,7 @@ function renderLedger() {
     waiting:["WAITING ON OTHERS", "A review, CI" + (L.approvers.length ? ", or an approval" : " or a person"), LCOL.review],
     active:["IN PROGRESS", "A session is on it, or it's parked", LCOL.moving],
     shipping:["IN TEST / SHIPPING", "Merged or tested, waiting to ship", LCOL.release]};
-  const SUB = {needs:[], todo:[],
+  const SUB = {needs:[["you", "Decisions"], ["reviews", "Pull request reviews"]], todo:[],
     waiting:[...(L.approvers.length ? [["approver", "Approval" + (apprNames ? " from " + apprNames : "")]] : []), ["review", "Review or a person"], ["ci", "CI"]],
     active:[["moving", "Working"], ["stalled", "Stalled (no update in 2+ days)"], ["hold", "On hold"]], shipping:[]};
   const nOld = rows.filter(r => r.b === "old").length;

@@ -132,10 +132,12 @@ latest comment. Credentials are read from that MCP server's settings at runtime,
 
 #### A pull request reviewer
 
-When someone asks you to review a pull request, Hallway can hand it to a reviewer session. Add
-`"review_agent": "Hallway PR reviewer"` to `deck.json` and open a session with that name; tell it to
-wait for review requests. Each new request reaches it as an urgent message (the dispatcher wakes it if
-it is asleep), and it runs the bundled `/hallway:review` skill: it reads the PR, the ticket and the code
+When someone asks you to review a pull request, Hallway can review it for you. With
+`"review_agent": "background"` in `deck.json`, the deck runs Claude Code unattended for each new request
+(`claude -p`, one review at a time, in `~/.claude/hallway/reviews/`, permission mode `auto` unless you set
+`"review_permission_mode"`); its rows appear under the name pr-reviewer. Prefer a visible session? Set
+`"review_agent"` to a session title instead, and each request reaches that session as an urgent message.
+Either way it runs the bundled `/hallway:review` skill: it reads the PR, the ticket and the code
 around the change, checks the PR's claims and tests, uses `/aq`, `/ar`, CodeRabbit or similar if you have
 them, and ends with a formal approve or request-changes review.
 
