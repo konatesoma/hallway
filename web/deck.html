@@ -936,11 +936,11 @@ function renderLedger() {
   const nOld = rows.filter(r => r.b === "old").length;
   const cards = $("#lcards"); cards.innerHTML = "";
   for (const [k, [l, h, col]] of Object.entries(G)) {
-    const n = rows.filter(r => GROUP[r.b] === k).length;
+    const n = rows.filter(r => GROUP[r.b] === k && (lRel === "all" || relOf(r) === lRel)).length;
     const c = document.createElement("button"); c.className = "lcard" + (lFilter === k ? " on" : ""); c.style.setProperty("--c", col);
     c.innerHTML = `<div class="n">${n}</div><div class="l">${l}</div><div class="h">${h}</div>`;
     c.onclick = () => { lFilter = lFilter === k ? "all" : k; lSub = null; renderLedger(); }; cards.appendChild(c); }
-  const subs = $("#lsubs"), opts = (SUB[lFilter] || []).map(([k, l]) => [k, l, rows.filter(r => subOf(r) === k).length]).filter(x => x[2]);
+  const subs = $("#lsubs"), opts = (SUB[lFilter] || []).map(([k, l]) => [k, l, rows.filter(r => subOf(r) === k && (lRel === "all" || relOf(r) === lRel)).length]).filter(x => x[2]);
   subs.hidden = opts.length < 2; subs.innerHTML = "";
   for (const [k, l, n] of opts) { const b = document.createElement("button"); b.className = "lchip" + (lSub === k ? " on" : "");
     b.innerHTML = `${esc(l)}<b>${n}</b>`; b.onclick = () => { lSub = lSub === k ? null : k; renderLedger(); }; subs.appendChild(b); }
@@ -1031,7 +1031,7 @@ function renderLedger() {
         tr2.querySelectorAll("select,textarea").forEach(x => x.onclick = e => e.stopPropagation());
         const showListen = () => { const s = S && S.sessions.find(x => x.handle === sel.value);
           const dOn = S && S.dispatcher && ["listening", "restarting"].includes(S.dispatcher.state);
-          note.textContent = !sel.value ? "" : s && s.listening ? "LISTENING · IT STARTS RIGHT AWAY" : dOn ? "ASLEEP · THE DISPATCHER WILL WAKE IT" : "ASLEEP · IT GETS THIS WHEN IT NEXT WAKES"; };
+          note.textContent = !sel.value ? "" : sel.value.startsWith("pr-reviewer#") ? "RUNS IN THE BACKGROUND · PICKS UP ITS REVIEW WHERE IT LEFT OFF" : s && s.listening ? "LISTENING · IT STARTS RIGHT AWAY" : dOn ? "ASLEEP · THE DISPATCHER WILL WAKE IT" : "ASLEEP · IT GETS THIS WHEN IT NEXT WAKES"; };
         sel.onchange = showListen; showListen();
         tr2.querySelector("[data-send]").onclick = async e => { e.stopPropagation(); if (!sel.value) return note.textContent = "PICK A SESSION FIRST";
           note.textContent = "SENDING…";
@@ -1072,6 +1072,11 @@ function sessionOptions(r) {
     all = [{handle:owner, title:r.session.title, group:r.project, listening:false, active:Date.now() / 1000}, ...all];
   const score = s => (s.handle === owner ? 0 : s.group === r.project ? 1 : 2);
   const sorted = [...all].sort((a, z) => score(a) - score(z) || z.active - a.active);
+  if (owner === "pr-reviewer") {
+    const n = (String(r.pr || "").match(/(\d{3,})/) || r.ticket.match(/^PR (\d+)$/) || [])[1];
+    const rest = sorted.filter(s => s.handle !== "pr-reviewer").map(s => `<option value="${esc(s.handle)}">${esc(s.title)} · ${esc(s.group || "")}${s.listening ? "" : " · asleep"}</option>`);
+    return (n ? `<option value="pr-reviewer#${n}" selected>Background PR reviewer · continues its review</option>` : `<option value="">Pick a session…</option>`) + rest.join("");
+  }
   const opts = sorted.map(s => `<option value="${esc(s.handle)}"${s.handle === owner ? " selected" : ""}>${esc(s.title)} · ${esc(s.group || "")}${s.handle === owner ? " · owns this" : ""}${s.listening ? "" : " · asleep"}</option>`);
   return (owner ? "" : `<option value="">Pick a session…</option>`) + opts.join("");
 }

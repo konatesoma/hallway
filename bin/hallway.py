@@ -1900,6 +1900,12 @@ def cmd_deck(conn, args):
                 text = (data.get("text") or "").strip()[:4000]
                 if not text:
                     return self._send(400, json.dumps({"error": "empty reply"}))
+                handle = data.get("handle") or ""
+                if handle.startswith(REVIEWER_HANDLE + "#"):
+                    ok = review_followup(handle.split("#", 1)[1], text)
+                    return self._send(200 if ok else 404, json.dumps(
+                        {"id": "review-" + handle.split("#", 1)[1], "listening": True} if ok else
+                        {"error": "no background review found for that pull request"}))
                 c = connect()
                 try:
                     mid = _deck_reply(c, data.get("handle") or "", text)
@@ -2650,7 +2656,8 @@ def ledger_state(conn, gh=None, jira=None):
         sess = r.get("session") or {}
         prefix = r["ticket"].split("-")[0] if TICKET_RE.fullmatch(r["ticket"] or "") else ""
         repo = ((r.get("pr_live") or {}).get("repo") or "").split("/")[-1]
-        r["project"] = sess.get("group") or tp.get(prefix) or (_pretty_project(repo) if repo else "") or prefix or "Other"
+        r["project"] = ("PR reviews" if sess.get("handle") == REVIEWER_HANDLE or r.get("source") == "review" else
+                        sess.get("group") or tp.get(prefix) or (_pretty_project(repo) if repo else "") or prefix or "Other")
         if sess.get("folder") and r["project"] not in folders:
             folders[r["project"]] = sess["folder"]
     for r in rows:
@@ -3542,6 +3549,9 @@ def _review_in_background(conf, pr):
               % (pr["author"], pr["repo"], pr["number"], pr["title"], pr["url"], command, pr["number"], pr["repo"],
                  pr["repo"], pr["repo"], REVIEWER_HANDLE))
 
+    sid = str(uuid.uuid4())
+    _review_runs_save(str(pr["number"]), {"session": sid, "dir": repo_dir, "repo": pr["repo"]})
+
     def run():
         with _REVIEW_LOCK:
             os.makedirs(repo_dir, exist_ok=True)
@@ -3550,12 +3560,55 @@ def _review_in_background(conf, pr):
                 out.write("review of %s#%s started %s\n\n" % (pr["repo"], pr["number"], time.ctime()))
                 out.flush()
                 try:
-                    subprocess.run([claude, "-p", prompt, "--permission-mode", mode], cwd=repo_dir,
+                    subprocess.run([claude, "-p", prompt, "--permission-mode", mode, "--session-id", sid], cwd=repo_dir,
                                    stdout=out, stderr=subprocess.STDOUT, timeout=3600,
                                    env=dict(os.environ, HALLWAY_UNATTENDED="1"))
                 except Exception as e:
                     out.write("\nreview run failed: %s\n" % e)
     threading.Thread(target=run, daemon=True).start()
+
+
+def _review_runs_save(number, rec):
+    path = os.path.join(ROOT, "reviews", "runs.json")
+    try:
+        runs = json.load(open(path))
+    except Exception:
+        runs = {}
+    runs[number] = rec
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    json.dump(runs, open(path, "w"))
+
+
+def review_followup(number, text):
+    """Continue a background review with the user's message: Claude Code resumes that
+    review's own conversation unattended (claude --resume <id> -p ...)."""
+    import threading, subprocess, shutil
+    global _REVIEW_LOCK
+    try:
+        rec = json.load(open(os.path.join(ROOT, "reviews", "runs.json")))[str(number)]
+    except Exception:
+        return False
+    if _REVIEW_LOCK is None:
+        _REVIEW_LOCK = threading.Lock()
+    conf = _deck_conf()
+    claude = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    log = os.path.join(ROOT, "reviews", "logs", "%s-%s.log" % (rec["repo"].split("/")[-1], number))
+    prompt = ("[Hallway] From your user: " + text + "\n\n(You are still running unattended: nobody can answer "
+              "questions. Do what your user asked, keep your Ledger row current with `hallway --as %s ...`, "
+              "and stop.)" % REVIEWER_HANDLE)
+
+    def run():
+        with _REVIEW_LOCK, open(log, "a") as out:
+            out.write("\n\nfollow-up from your user %s\n\n" % time.ctime())
+            out.flush()
+            try:
+                subprocess.run([claude, "--resume", rec["session"], "-p", prompt, "--permission-mode",
+                                conf.get("review_permission_mode") or "auto"], cwd=rec["dir"],
+                               stdout=out, stderr=subprocess.STDOUT, timeout=3600)
+            except Exception as e:
+                out.write("\nfollow-up failed: %s\n" % e)
+    threading.Thread(target=run, daemon=True).start()
+    return True
 
 
 def _gh_login():
