@@ -211,6 +211,8 @@ button,textarea{font:inherit;color:inherit}
 .ltab{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0b1520}
 .ltab table{width:100%;border-collapse:collapse}
 .ltab thead th{background:#0a141e;text-align:left;font:600 10px var(--mono);letter-spacing:.16em;color:var(--dim);padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+.lfind{width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 12px;background:#0b1520;color:var(--text);border:1px solid var(--line);border-radius:8px;font:400 13px var(--sans)}
+.lfind:focus{outline:none;border-color:#5ef2ff}
 #news{position:fixed;right:18px;bottom:18px;z-index:60;max-width:420px;background:#0b1520;border:1px solid var(--line2);border-left:3px solid #5ef2ff;border-radius:10px;padding:14px 16px;box-shadow:0 10px 40px rgba(0,0,0,.5);font:400 13px var(--sans);color:var(--text)}
 #news .nh{font:600 10.5px var(--mono);letter-spacing:.16em;color:#5ef2ff;margin-bottom:8px}
 #news p{margin:0 0 8px;line-height:1.45}#news code{font:12px var(--mono);color:#c3a6ff}
@@ -1017,6 +1019,7 @@ function renderLedger() {
             ${r.also ? `<h4>ALSO TRACKED BY</h4><p>${esc(r.also.join(", "))}</p>` : ""}
             <h4>LAST UPDATED</h4><p>${r.updated ? new Date(r.updated * 1000).toLocaleString() + (r.source === "session" ? " by the session" : "") : "Not reported by a session yet."}</p>
             <div class="lact"><h4>ACT ON IT</h4>
+              <input class="lfind" data-find placeholder="Search sessions by name or project…" autocomplete="off">
               <select data-to>${sessionOptions(r)}</select>
               <textarea data-text>${esc(actText(r))}</textarea>
               <div class="row2"><button class="fb p" data-send>Send to this session</button>
@@ -1028,7 +1031,13 @@ function renderLedger() {
             ${r.pr_live ? `<a class="fb" target="_blank" href="${esc(r.pr_live.url)}">Open PR #${r.pr_live.number}</a>` : ""}
             ${(r.source === "jira" || r.jira_alert) ? `<button class="fb p" data-ack>Done, I've handled it</button>` : ""}</div></div></td>`;
         const sel = tr2.querySelector("[data-to]"), ta = tr2.querySelector("[data-text]"), note = tr2.querySelector("[data-note]");
-        tr2.querySelectorAll("select,textarea").forEach(x => x.onclick = e => e.stopPropagation());
+        tr2.querySelectorAll("select,textarea,input").forEach(x => x.onclick = e => e.stopPropagation());
+        const find = tr2.querySelector("[data-find]");
+        // Typing narrows the session list; the best match is picked so Send goes where you expect.
+        find.oninput = () => { sel.innerHTML = sessionOptions(r, find.value);
+          if (find.value.trim() && sel.options.length) sel.selectedIndex = sel.options[0].value ? 0 : Math.min(1, sel.options.length - 1);
+          sel.onchange && sel.onchange(); };
+        find.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); sel.focus(); } };
         const showListen = () => { const s = S && S.sessions.find(x => x.handle === sel.value);
           const dOn = S && S.dispatcher && ["listening", "restarting"].includes(S.dispatcher.state);
           note.textContent = !sel.value ? "" : sel.value.startsWith("pr-reviewer#") ? "RUNS IN THE BACKGROUND · PICKS UP ITS REVIEW WHERE IT LEFT OFF" : s && s.listening ? "LISTENING · IT STARTS RIGHT AWAY" : dOn ? "ASLEEP · THE DISPATCHER WILL WAKE IT" : "ASLEEP · IT GETS THIS WHEN IT NEXT WAKES"; };
@@ -1064,21 +1073,26 @@ function renderLedger() {
   const jr = L.jira_error ? ` Jira: ${esc(L.jira_error)}.` : L.jira_at ? ` Jira checked ${ago(L.jira_at)} ago.` : "";
   $("#lfoot").innerHTML = `${rows.filter(r => r.source === "session").length} rows from sessions, ${rows.filter(r => r.source === "github").length} open PRs and ${rows.filter(r => r.source === "jira").length} Jira tickets no session has reported. ${gh}.${jr}`;
 }
-function sessionOptions(r) {
+function sessionOptions(r, q) {
+  const words = (q || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = s => !words.length || words.every(w => `${s.title} ${s.group || ""} ${s.handle}`.toLowerCase().includes(w));
   const owner = r.session && r.session.handle;
   // The owner comes first even when asleep (the dispatcher wakes it); otherwise running sessions.
   let all = (S ? (S.all_sessions || S.sessions) : []).slice();
   if (owner && !all.some(s => s.handle === owner))
     all = [{handle:owner, title:r.session.title, group:r.project, listening:false, active:Date.now() / 1000}, ...all];
   const score = s => (s.handle === owner ? 0 : s.group === r.project ? 1 : 2);
-  const sorted = [...all].sort((a, z) => score(a) - score(z) || z.active - a.active);
+  const sorted = [...all].filter(hit).sort((a, z) => score(a) - score(z) || z.active - a.active);
+  if (words.length && !sorted.length && !(owner === "pr-reviewer" && hit({title:"Background PR reviewer", handle:""})))
+    return `<option value="">No session matches “${esc(q)}”</option>`;
   if (owner === "pr-reviewer") {
     const n = (String(r.pr || "").match(/(\d{3,})/) || r.ticket.match(/^PR (\d+)$/) || [])[1];
     const rest = sorted.filter(s => s.handle !== "pr-reviewer").map(s => `<option value="${esc(s.handle)}">${esc(s.title)} · ${esc(s.group || "")}${s.listening ? "" : " · asleep"}</option>`);
-    return (n ? `<option value="pr-reviewer#${n}" selected>Background PR reviewer · continues its review</option>` : `<option value="">Pick a session…</option>`) + rest.join("");
+    const mine = n && hit({title:"Background PR reviewer", handle:""});
+    return (mine ? `<option value="pr-reviewer#${n}" selected>Background PR reviewer · continues its review</option>` : `<option value="">Pick a session…</option>`) + rest.join("");
   }
   const opts = sorted.map(s => `<option value="${esc(s.handle)}"${s.handle === owner ? " selected" : ""}>${esc(s.title)} · ${esc(s.group || "")}${s.handle === owner ? " · owns this" : ""}${s.listening ? "" : " · asleep"}</option>`);
-  return (owner ? "" : `<option value="">Pick a session…</option>`) + opts.join("");
+  return (owner && sorted.some(s => s.handle === owner) ? "" : `<option value="">Pick a session…</option>`) + opts.join("");
 }
 function actText(r) {
   const lc = r.jira && r.jira.last_comment;
