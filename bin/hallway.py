@@ -2612,6 +2612,16 @@ def ledger_state(conn, gh=None, jira=None):
                 r["jira_done"] = ji["status"]  # QA or a release already finished it in Jira
             elif _jira_disagrees(r["status"], ji["status"]):
                 r["jira_status"] = ji["status"]  # shown beside the row's own status
+    # A review the reviewer held for the user is finished once the user has acted: GitHub clears
+    # the review request when they submit a review (or the author withdraws it).
+    if gh and gh.at:
+        open_reqs = {str(p["number"]) for p in gh.requested_snapshot().values()}
+        for r in rows:
+            if (r.get("session") or {}).get("handle") != REVIEWER_HANDLE or (r["status"] or "").lower() == "done":
+                continue
+            m = re.search(r"(\d{3,})", str(r.get("pr") or "")) or re.match(r"PR (\d+)$", r["ticket"])
+            if m and m.group(1) not in open_reqs:
+                r["review_done"] = True
     rows = _one_row_per_ticket(rows)
     tp = conf.get("ticket_projects") or {}
     folders = {k: os.path.expanduser(v) for k, v in (conf.get("project_folders") or {}).items()}

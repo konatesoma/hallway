@@ -866,7 +866,7 @@ const subOf = r => r.b === "review" && r.waiting_on === "ci" ? "ci" : r.b === "y
 function bucketOf(r) {
   const st = (r.status || "").toLowerCase(), w = r.waiting_on || "";
   if (r.source === "github" && r.pr_live && Date.now() / 1000 - Date.parse(r.pr_live.updated) / 1000 > OLD_DAYS * 86400) return "old";
-  if (st === "done" || r.jira_done || (st === "merged" && (!w || w === "nobody"))) return "done";
+  if (st === "done" || r.jira_done || r.review_done || (st === "merged" && (!w || w === "nobody"))) return "done";
   if (w === "you") return "you";
   if (L.approvers.includes(w.split(/[-_ .@]/)[0])) return "approver";
   // Nobody has begun it: Jira still has it in To Do, or the session says so. That is Not started,
@@ -954,9 +954,11 @@ function renderLedger() {
   // Show done / Show old PRs add those rows whatever card is selected.
   const extra = r => (lShowDone && r.b === "done") || (lShowOld && r.b === "old");
   // Release filter: the Jira fix versions present on the board
-  const rel = $("#lRel"), rels = [...new Set(rows.map(relOf))].sort(relCmp);
+  // Count only what the table can show (finished rows and old PRs are hidden).
+  const live = rows.filter(r => r.b !== "done" && r.b !== "old");
+  const rel = $("#lRel"), rels = [...new Set(live.map(relOf))].sort(relCmp);
   if (lRel !== "all" && !rels.includes(lRel)) lRel = "all";
-  rel.innerHTML = `<option value="all">All releases</option>` + rels.map(v => `<option value="${esc(v)}"${v === lRel ? " selected" : ""}>${v === NOREL ? "No release" : esc(v)} (${rows.filter(r => relOf(r) === v).length})</option>`).join("");
+  rel.innerHTML = `<option value="all">All releases</option>` + rels.map(v => `<option value="${esc(v)}"${v === lRel ? " selected" : ""}>${v === NOREL ? "No release" : esc(v)} (${live.filter(r => relOf(r) === v).length})</option>`).join("");
   rel.onchange = () => { lRel = rel.value; try { localStorage.setItem("hallway.lrel", lRel); } catch (e) {} renderLedger(); };
   const list = rows.filter(r => (lRel === "all" || relOf(r) === lRel) && (extra(r) || ((lFilter === "all" || GROUP[r.b] === lFilter) && (!lSub || subOf(r) === lSub)
       && r.b !== "done" && r.b !== "old")) &&
