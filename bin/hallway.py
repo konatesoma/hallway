@@ -1631,6 +1631,26 @@ def _version():
         return ""
 
 
+def _every_open_session(conn, titles, groups, alias, live):
+    """Every session still in the sidebar (not archived), running or asleep, newest first:
+    anything you can hand work to. A sleeping one is woken by the dispatcher."""
+    best = {}
+    for cid, m in titles.items():
+        if m.get("archived") or m.get("current"):
+            continue
+        if m["host"] in best and (best[m["host"]][1].get("active") or 0) >= (m.get("active") or 0):
+            continue
+        best[m["host"]] = (cid, m)
+    out = []
+    for host, (cid, m) in best.items():
+        row = conn.execute("SELECT handle FROM agents WHERE session_id=?", (cid,)).fetchone()
+        h = row["handle"] if row else "s-" + cid[:8]
+        g = groups.get(host)
+        out.append({"handle": h, "title": m.get("title") or "(untitled)", "group": alias.get(g, g) if g else None,
+                    "active": m.get("active") or 0, "live": h in live, "listening": _listening(h), "host": host})
+    return sorted(out, key=lambda x: -x["active"])
+
+
 def deck_state(conn):
     t = now()
     titles = session_titles()
@@ -1708,6 +1728,7 @@ def deck_state(conn):
     today = conn.execute("SELECT COUNT(*) FROM messages WHERE ts >= ?", (midnight,)).fetchone()[0]
     return {"generated_at": t, "sessions": sessions, "messages": msgs, "names": names,
             "dispatcher": dispatcher_status(), "version": _version(), "whats_new": _whats_new_since(""),
+            "all_sessions": _every_open_session(conn, titles, groups, alias, live),
             "known": sorted(known), "activity": bins, "messages_today": today,
             "hour": lt.tm_hour, "human": HUMAN}
 

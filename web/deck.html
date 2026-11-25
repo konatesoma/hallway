@@ -184,7 +184,7 @@ button,textarea{font:inherit;color:inherit}
 #ledger h1{font:600 28px var(--sans);margin:0;color:#fff}
 #ledger .lsub{color:var(--dim);font-size:14px;margin:6px 0 20px}
 #ledger .lsub b{color:var(--text);font-weight:500}
-.lcards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:12px}
+.lcards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:12px}
 .lsubs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
 .lsubs .lchip b{color:var(--text);margin-left:6px;font-weight:600}
 .lcard{all:unset;box-sizing:border-box;cursor:pointer;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#0b1520;position:relative;overflow:hidden}
@@ -928,7 +928,8 @@ function renderLedger() {
     todo:["NOT STARTED", "Nobody has begun it yet", LCOL.todo],
     waiting:["WAITING ON OTHERS", "A review, CI" + (L.approvers.length ? ", or an approval" : " or a person"), LCOL.review],
     active:["IN PROGRESS", "A session is on it, or it's parked", LCOL.moving],
-    shipping:["IN TEST / SHIPPING", "Merged or tested, waiting to ship", LCOL.release]};
+    shipping:["IN TEST / SHIPPING", "Merged or tested, waiting to ship", LCOL.release],
+    done:["DONE", "Finished in the last 7 days", LCOL.done]};
   const SUB = {needs:[["you", "Decisions"], ["reviews", "Pull request reviews"]], todo:[],
     waiting:[...(L.approvers.length ? [["approver", "Approval" + (apprNames ? " from " + apprNames : "")]] : []), ["review", "Review or a person"], ["ci", "CI"]],
     active:[["moving", "Working"], ["stalled", "Stalled (no update in 2+ days)"], ["hold", "On hold"]], shipping:[]};
@@ -955,13 +956,14 @@ function renderLedger() {
   const extra = r => (lShowDone && r.b === "done") || (lShowOld && r.b === "old");
   // Release filter: the Jira fix versions present on the board
   // Count only what the table can show (finished rows and old PRs are hidden).
-  const live = rows.filter(r => r.b !== "done" && r.b !== "old");
+  // The selected card and filter decide which rows count; the release list then counts only those.
+  const inCard = r => (lFilter === "all" ? r.b !== "done" && r.b !== "old" : GROUP[r.b] === lFilter) && (!lSub || subOf(r) === lSub);
+  const live = rows.filter(inCard);
   const rel = $("#lRel"), rels = [...new Set(live.map(relOf))].sort(relCmp);
   if (lRel !== "all" && !rels.includes(lRel)) lRel = "all";
   rel.innerHTML = `<option value="all">All releases</option>` + rels.map(v => `<option value="${esc(v)}"${v === lRel ? " selected" : ""}>${v === NOREL ? "No release" : esc(v)} (${live.filter(r => relOf(r) === v).length})</option>`).join("");
   rel.onchange = () => { lRel = rel.value; try { localStorage.setItem("hallway.lrel", lRel); } catch (e) {} renderLedger(); };
-  const list = rows.filter(r => (lRel === "all" || relOf(r) === lRel) && (extra(r) || ((lFilter === "all" || GROUP[r.b] === lFilter) && (!lSub || subOf(r) === lSub)
-      && r.b !== "done" && r.b !== "old")) &&
+  const list = rows.filter(r => (lRel === "all" || relOf(r) === lRel) && (extra(r) || inCard(r)) &&
     (!lQ || JSON.stringify(r).toLowerCase().includes(lQ.toLowerCase())));
   if (!list.length) body.innerHTML = `<tr><td colspan="7" class="empty">Nothing here yet. Sessions add their tickets as they reach milestones.</td></tr>`;
   document.querySelectorAll("[data-g]").forEach(b => b.classList.toggle("on", b.dataset.g === lGroup));
@@ -1065,7 +1067,7 @@ function renderLedger() {
 function sessionOptions(r) {
   const owner = r.session && r.session.handle;
   // The owner comes first even when asleep (the dispatcher wakes it); otherwise running sessions.
-  let all = (S ? S.sessions : []).filter(s => s.live || s.handle === owner);
+  let all = (S ? (S.all_sessions || S.sessions) : []).slice();
   if (owner && !all.some(s => s.handle === owner))
     all = [{handle:owner, title:r.session.title, group:r.project, listening:false, active:Date.now() / 1000}, ...all];
   const score = s => (s.handle === owner ? 0 : s.group === r.project ? 1 : 2);
